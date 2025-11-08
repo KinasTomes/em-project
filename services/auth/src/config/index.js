@@ -1,6 +1,7 @@
-require("dotenv").config();
+const sharedConfig = require("@ecommerce/config");
 
 module.exports = {
-  mongoURI: process.env.MONGODB_AUTH_URI,
-  jwtSecret: process.env.JWT_SECRET || "secret",
+  mongoURI: sharedConfig.getMongoURI('auth'),
+  jwtSecret: sharedConfig.JWT_SECRET,
+  port: sharedConfig.getPort(3000),
 };

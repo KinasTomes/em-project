@@ -1,9 +1,9 @@
-require('dotenv').config();
+const sharedConfig = require('@ecommerce/config');
 
 module.exports = {
-    mongoURI: process.env.MONGODB_ORDER_URI || 'mongodb://localhost/orders',
-    rabbitMQURI: 'amqp://localhost',
+    mongoURI: sharedConfig.getMongoURI('order'),
+    rabbitMQURI: sharedConfig.RABBITMQ_URL,
     rabbitMQQueue: 'orders',
-    port: 3002
+    port: sharedConfig.getPort(3002),
 };
   

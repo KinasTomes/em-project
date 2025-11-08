@@ -1,45 +1,436 @@
-# nodejs-ecommerce-microservice
+# 🛍️ E-Commerce Microservices Platform
 
-A microservice sample for building an e-commerce backend. Medium article write-up on this project can be found here [here](https://medium.com/@nicholasgcc/building-scalable-e-commerce-backend-with-microservices-exploring-design-decisions-node-js-b5228080403b)
+> Kiến trúc microservices hiện đại cho hệ thống thương mại điện tử, sử dụng Node.js, Express, MongoDB, RabbitMQ và Docker.
 
-## Software Architecture
-<img width="810" alt="image" src="https://user-images.githubusercontent.com/69677864/223613048-384c48cd-f846-4741-9b0d-90fbb2442590.png">
+[![pnpm](https://img.shields.io/badge/pnpm-10.20.0-yellow)](https://pnpm.io/)
+[![Node](https://img.shields.io/badge/node-18.x-green)](https://nodejs.org/)
+[![Docker](https://img.shields.io/badge/docker-compose-blue)](https://docs.docker.com/compose/)
 
-- The application uses an API gateway to bind all services along a single front, acting as a proxy for the domains in which the `auth`, `order` and `product` microservices are deployed on
-- Each microservice, the API gateway and RabbitMQ are deployed as Docker images
-- Interactions between `product` service and `order` service uses [AMQP](https://www.amqp.org) protcol, using RabbitMQ which consists of two queues - `orders` and `products`. This saves on resources allocated for REST calls to MongoDB.
-- `product` service publishes to the order queue which is then consumed and collated by `order` service
-- `order` service publishes ordered products to the product queue which is then consumed by `product` to return order details
+## 📋 Mục lục
 
-## Microservice Structure
-<img width="678" alt="image" src="https://user-images.githubusercontent.com/69677864/223522265-3a585a38-0148-4921-bfea-fd19989c8bff.png">
+- [Tổng quan](#-tổng-quan)
+- [Kiến trúc hệ thống](#-kiến-trúc-hệ-thống)
+- [Cấu trúc dự án](#-cấu-trúc-dự-án)
+- [Các microservices](#-các-microservices)
+- [Công nghệ sử dụng](#-công-nghệ-sử-dụng)
+- [Bắt đầu](#-bắt-đầu)
+- [Phát triển](#-phát-triển)
+- [API Documentation](#-api-documentation)
+- [Roadmap](#-roadmap)
 
-- The architecture for a microservice is inspired by Uncle Bob's [Clean Architecture](https://www.freecodecamp.org/news/a-quick-introduction-to-clean-architecture-990c014448d2), which supports strong modularity, loose coupling and dependency injection
+---
 
-Tech Stack: Node.js, Express, MongoDB, Docker, RabbitMQ, Mocha, Chai
+## 🎯 Tổng quan
 
-## Prerequisites
-- Have [npm](https://www.npmjs.com) and [Node.js](https://nodejs.dev/en/) on your machine
-- Have [Docker](https://www.docker.com) installed
-- Have [RabbitMQ](https://www.rabbitmq.com) installed
-- Set up your own [MongoDB](https://www.mongodb.com) collection with appropriate security/credential settings
+Đây là một hệ thống **microservices** hoàn chỉnh cho nền tảng thương mại điện tử, được tổ chức dưới dạng **monorepo** với **pnpm workspaces**. Dự án tuân theo các nguyên tắc:
 
-## Steps to run
+- ✅ **Clean Architecture** - Kiến trúc phân lớp rõ ràng (Controllers, Services, Repositories, Models)
+- ✅ **Shared Packages** - Code dùng chung được tách thành các package riêng
+- ✅ **Event-Driven** - Giao tiếp bất đồng bộ qua RabbitMQ
+- ✅ **Docker-first** - Dễ dàng triển khai và scale với Docker Compose
+- ✅ **Type-safe Configuration** - Config tập trung, an toàn
 
-### On Docker
-1. Create a .env file following the format specified in the `/auth/env.example`, `order/env.example` and `product/env.example` directories, following the format specified in each microservice directory
-2. Run `docker-compose build`
-3. Run `docker-compose up`. Now you can test the APIs from localhost:3003
+---
 
-### On localhost
-1. Create a .env file following the format specified in the `/auth/env.example`, `order/env.example` and `product/env.example` directories, following the format specified in each microservice directory
-2. Run `npm install` in the `/auth`, `/product`, `/order` and `/api-gateway` directories
-3. Run `npm start` on all four directories mentioned in the step above. Now you can test the APIs from localhost:3003
+## 📂 Cấu trúc dự án
 
-## Future work and improvements
-- It could be useful to use Kubernetes for container orchestration in order to bundle up this project into one cohesive unit
+```
+em-project/
+├── packages/                    # Shared packages (workspace)
+│   └── config/                  # @ecommerce/config - Cấu hình chung
+│       ├── index.js
+│       └── package.json
+│
+├── services/                    # Microservices
+│   ├── api-gateway/            # @ecommerce/api-gateway
+│   │   ├── Dockerfile
+│   │   ├── index.js
+│   │   └── package.json
+│   │
+│   ├── auth/                   # @ecommerce/auth
+│   │   ├── Dockerfile
+│   │   ├── index.js
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── app.js
+│   │       ├── config/
+│   │       ├── controllers/
+│   │       ├── middlewares/
+│   │       ├── models/
+│   │       ├── repositories/
+│   │       ├── services/
+│   │       └── test/
+│   │
+│   ├── product/                # @ecommerce/product
+│   │   ├── Dockerfile
+│   │   ├── index.js
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── app.js
+│   │       ├── config.js
+│   │       ├── controllers/
+│   │       ├── models/
+│   │       ├── repositories/
+│   │       ├── routes/
+│   │       ├── services/
+│   │       ├── test/
+│   │       └── utils/
+│   │
+│   └── order/                  # @ecommerce/order
+│       ├── Dockerfile
+│       ├── index.js
+│       ├── package.json
+│       └── src/
+│           ├── app.js
+│           ├── config.js
+│           ├── models/
+│           └── utils/
+│
+├── docker-compose.yml          # Orchestration
+├── pnpm-workspace.yaml         # pnpm workspace config
+├── pnpm-lock.yaml             # Lockfile chung
+├── .npmrc                      # pnpm configuration
+├── .dockerignore              # Docker ignore rules
+├── package.json               # Root package
+└── README.md                   # This file
+```
 
-- While I tried to follow a TDD approach - that is, letting test cases guide development - I eventually gave up on it in the name of speedy development. Ideally, I could have written unit tests first, and slowly increment up to integraton tests and then system tests.
-- The internal service of each microservice does not follow pure dependency injection advocated in Clean Architecture. The internal file structures and flow of dependencies are loosely based on Clean Architecture and the code does not fully utilise dependency injection principles. While I did try to minimise interdependencies, I found it a bit overkill to follow Clean Architecture fully for what is essentially a take-home project. But it is worth trying eventually.
-- I'd like to write a series of Bash scripts with various `curl` commands to automate API testing and follow them in sequence of particular use-cases (e.g. user publishes product -> another user logs in -> other user buys product -> ...)<br>
-- It could be a good exercise to deploy the databases across different platforms (e.g. Firebase, SQL, etc.) to prevent a single point of failure
+---
+
+## 🔧 Các Microservices
+
+### 1️⃣ **API Gateway** (`:3003`)
+**Vai trò:** Điểm vào duy nhất cho toàn bộ hệ thống, định tuyến requests đến các service tương ứng.
+
+**Công nghệ:** Express.js, http-proxy
+
+**Endpoints:**
+- `/auth/*` → Auth Service
+- `/products/*` → Product Service
+- `/orders/*` → Order Service
+
+---
+
+### 2️⃣ **Auth Service** (`:3000`)
+**Vai trò:** Quản lý xác thực người dùng, đăng ký, đăng nhập, JWT tokens.
+
+**Công nghệ:** Express.js, MongoDB, bcryptjs, jsonwebtoken
+
+**Kiến trúc:**
+```
+Controllers → Services → Repositories → Models (Mongoose)
+```
+
+**API Endpoints:**
+```http
+POST   /auth/register          # Đăng ký user mới
+POST   /auth/login             # Đăng nhập, nhận JWT token
+GET    /auth/dashboard         # Protected route (cần token)
+```
+
+**Cấu trúc layered:**
+- `authController.js` - Xử lý HTTP requests
+- `authService.js` - Business logic (hash password, generate token)
+- `userRepository.js` - Data access layer
+- `user.js` - Mongoose model
+- `authMiddleware.js` - JWT verification
+
+---
+
+### 3️⃣ **Product Service** (`:3001`)
+**Vai trò:** Quản lý sản phẩm (CRUD), publish events qua RabbitMQ.
+
+**Công nghệ:** Express.js, MongoDB, RabbitMQ (amqplib)
+
+**Kiến trúc:**
+```
+Routes → Controllers → Services → Repositories → Models
+                ↓
+         MessageBroker (RabbitMQ)
+```
+
+**API Endpoints:**
+```http
+GET    /api/v1/product         # Lấy danh sách sản phẩm
+GET    /api/v1/product/:id     # Lấy 1 sản phẩm
+POST   /api/v1/product         # Tạo sản phẩm (protected)
+```
+
+**Events:**
+- Publish: `product.created`, `product.updated`
+
+---
+
+### 4️⃣ **Order Service** (`:3002`)
+**Vai trò:** Quản lý đơn hàng, consume events từ RabbitMQ.
+
+**Công nghệ:** Express.js, MongoDB, RabbitMQ
+
+**API Endpoints:**
+```http
+POST   /api/v1/order           # Tạo đơn hàng (protected)
+GET    /api/v1/order/:id       # Lấy thông tin đơn hàng
+```
+
+**Events:**
+- Consume: `product.*`, `order.*`
+
+---
+
+## 🛠️ Công nghệ sử dụng
+
+| Công nghệ | Mục đích |
+|-----------|----------|
+| **Node.js 18** | Runtime |
+| **Express.js** | Web framework |
+| **MongoDB** | Database (mỗi service 1 DB riêng) |
+| **Mongoose** | ODM cho MongoDB |
+| **RabbitMQ** | Message broker |
+| **JWT** | Authentication tokens |
+| **bcryptjs** | Password hashing |
+| **pnpm** | Package manager (workspace) |
+| **Docker** | Containerization |
+| **Docker Compose** | Orchestration |
+| **Mocha + Chai** | Testing framework |
+
+---
+
+## 🚀 Bắt đầu
+
+### Yêu cầu hệ thống
+
+- **Node.js** >= 18.x
+- **pnpm** >= 10.20.0
+- **Docker** & **Docker Compose**
+
+### Cài đặt
+
+```bash
+# 1. Clone repository
+git clone https://github.com/KinasTomes/em-project.git
+cd em-project
+
+# 2. Cài đặt dependencies (cho tất cả workspaces)
+pnpm install
+
+# 3. Tạo file .env cho mỗi service
+# Auth service
+cat > services/auth/.env << EOF
+MONGODB_AUTH_URI=mongodb://localhost:27017/auth
+JWT_SECRET=your-super-secret-key-change-in-production
+PORT=3000
+EOF
+
+# Product service
+cat > services/product/.env << EOF
+MONGODB_PRODUCT_URI=mongodb://localhost:27017/products
+RABBITMQ_URL=amqp://localhost:5672
+PORT=3001
+EOF
+
+# Order service
+cat > services/order/.env << EOF
+MONGODB_ORDER_URI=mongodb://localhost:27017/orders
+RABBITMQ_URL=amqp://localhost:5672
+PORT=3002
+EOF
+```
+
+### Chạy với Docker (Recommended)
+
+```bash
+# Build tất cả services
+docker compose build
+
+# Chạy toàn bộ hệ thống
+docker compose up
+
+# Hoặc chạy background
+docker compose up -d
+
+# Xem logs
+docker compose logs -f
+
+# Dừng hệ thống
+docker compose down
+```
+
+**Services sẽ chạy tại:**
+- API Gateway: http://localhost:3003
+- Auth Service: http://localhost:3000
+- Product Service: http://localhost:3001
+- Order Service: http://localhost:3002
+- RabbitMQ Management: http://localhost:15672 (user: `guest`, pass: `guest`)
+
+### Chạy local (Development)
+
+```bash
+# Cần chạy MongoDB và RabbitMQ trước
+# Hoặc dùng docker-compose chỉ cho infrastructure:
+docker compose up rabbitmq -d
+
+# Terminal 1 - Auth
+pnpm dev:auth
+
+# Terminal 2 - Product
+pnpm dev:product
+
+# Terminal 3 - Order
+pnpm dev:order
+
+# Terminal 4 - Gateway
+pnpm dev:gateway
+```
+
+---
+
+## 💻 Phát triển
+
+### Scripts có sẵn
+
+```bash
+# Ở thư mục root
+pnpm install              # Cài đặt tất cả dependencies
+pnpm dev:auth            # Chạy auth service
+pnpm dev:gateway         # Chạy api-gateway
+pnpm dev:order           # Chạy order service
+pnpm dev:product         # Chạy product service
+pnpm dev:all             # Chạy tất cả services song song
+pnpm test                # Chạy tất cả tests
+
+# Ở từng service
+cd services/auth
+pnpm start               # Chạy service
+pnpm test                # Chạy tests
+```
+
+### Thêm dependency mới
+
+```bash
+# Thêm dependency cho service cụ thể
+pnpm add express --filter @ecommerce/auth
+
+# Thêm vào shared package
+pnpm add lodash --filter @ecommerce/config
+
+# Thêm dev dependency cho tất cả
+pnpm add -D eslint -w
+```
+
+### Tạo service mới
+
+```bash
+# 1. Tạo thư mục trong services/
+mkdir -p services/payment/src
+
+# 2. Tạo package.json
+cd services/payment
+pnpm init
+
+# 3. Đổi tên package thành @ecommerce/payment
+
+# 4. Thêm dependency
+pnpm add express @ecommerce/config
+
+# 5. Cập nhật pnpm-workspace.yaml (đã auto-detect)
+
+# 6. Tạo Dockerfile (copy từ service khác)
+
+# 7. Thêm vào docker-compose.yml
+```
+
+---
+
+## 📖 API Documentation
+
+### Authentication Flow
+
+```http
+# 1. Đăng ký user mới
+POST http://localhost:3003/auth/register
+Content-Type: application/json
+
+{
+  "username": "testuser",
+  "password": "password123"
+}
+
+# Response: 201 Created
+{
+  "message": "User created successfully"
+}
+
+# 2. Đăng nhập
+POST http://localhost:3003/auth/login
+Content-Type: application/json
+
+{
+  "username": "testuser",
+  "password": "password123"
+}
+
+# Response: 200 OK
+{
+  "success": true,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+# 3. Truy cập protected route
+GET http://localhost:3003/auth/dashboard
+Authorization: Bearer <token>
+
+# Response: 200 OK
+{
+  "message": "Welcome to the dashboard"
+}
+```
+
+### Product API
+
+```http
+# Lấy danh sách sản phẩm
+GET http://localhost:3003/products/api/v1/product
+
+# Tạo sản phẩm mới (cần auth)
+POST http://localhost:3003/products/api/v1/product
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "iPhone 15",
+  "price": 999,
+  "description": "Latest iPhone"
+}
+```
+
+### Order API
+
+```http
+# Tạo đơn hàng (cần auth)
+POST http://localhost:3003/orders/api/v1/order
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productId": "product_id_here",
+      "quantity": 2
+    }
+  ]
+}
+```
+
+---
+
+## 👥 Authors
+
+- **KinasTomes** - [GitHub](https://github.com/KinasTomes)
+
+---
+
+**📌 Quick Links:**
+- [Project Plan](./PLAN.md) - Kế hoạch chi tiết 4 tuần
+- [Old README](./OLD_README.md) - Tài liệu cũ (legacy)
+- [Docker Docs](https://docs.docker.com/)
+- [pnpm Docs](https://pnpm.io/)

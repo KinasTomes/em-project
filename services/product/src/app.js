@@ -3,7 +3,6 @@ const mongoose = require("mongoose");
 const config = require("./config");
 const MessageBroker = require("./utils/messageBroker");
 const productsRouter = require("./routes/productRoutes");
-require("dotenv").config();
 
 class App {
   constructor() {
