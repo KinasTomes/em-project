@@ -7,14 +7,15 @@ RUN npm install -g pnpm@10.20.0
 # Set the working directory to /app
 WORKDIR /app
 
-# Copy package.json and pnpm-lock.yaml to the container
-COPY package.json pnpm-lock.yaml* ./
+# Copy pnpm-lock.yaml from root and package.json from service
+COPY pnpm-lock.yaml ./
+COPY services/auth/package.json ./
 
 # Install app dependencies
 RUN pnpm install --frozen-lockfile
 
 # Copy the rest of the application files to the container
-COPY . .
+COPY services/auth/ .
 
 # Set the command to start the app
 CMD [ "pnpm", "start" ]

@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+**/*.test.js
+**/test/
+
+# Build artifacts
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Package manager files (sẽ copy từ root)
+**/package-lock.json
+**/pnpm-lock.yaml
+
+# Keep only root pnpm-lock.yaml
+!pnpm-lock.yaml
