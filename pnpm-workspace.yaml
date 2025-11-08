@@ -1,0 +1,3 @@
+packages:
+  - 'services/*'  # Tìm các service trong thư mục services/
+  - 'packages/*'  # Tìm các gói dùng chung trong thư mục packages/
