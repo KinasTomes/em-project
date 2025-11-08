@@ -3,7 +3,13 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "test": "mocha --timeout 20000 --recursive --exclude '**/node_modules/**' '**/*.test.js' --exit"
+    "test": "mocha --timeout 20000 --recursive --exclude '**/node_modules/**' '**/*.test.js' --exit",
+    "dev:auth": "pnpm --filter @ecommerce/auth start",
+    "dev:gateway": "pnpm --filter @ecommerce/api-gateway start",
+    "dev:order": "pnpm --filter @ecommerce/order start",
+    "dev:product": "pnpm --filter @ecommerce/product start",
+    "dev:all": "pnpm -r --parallel start",
+    "install:all": "pnpm install -r"
   },
   "keywords": [],
   "author": "",

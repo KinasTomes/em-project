@@ -2,11 +2,11 @@ version: "3.8"
 
 services:
   auth:
-    build: ./auth
+    build: ./services/auth
     ports:
       - "3000:3000"
     env_file:
-      - ./auth/.env
+      - ./services/auth/.env
     networks:
       - ecommerce
 
@@ -23,7 +23,7 @@ services:
         - ecommerce
 
   order:
-    build: ./order
+    build: ./services/order
     ports:
       - "3002:3002"
     depends_on:
@@ -31,12 +31,12 @@ services:
     environment:
       - RABBITMQ_URL=amqp://rabbitmq:5672
     env_file:
-      - ./order/.env
+      - ./services/order/.env
     networks:
       - ecommerce
 
   product:
-    build: ./product
+    build: ./services/product
     ports:
       - "3001:3001"
     depends_on:
@@ -44,12 +44,12 @@ services:
     environment:
       - RABBITMQ_URL=amqp://rabbitmq:5672
     env_file:
-      - ./product/.env
+      - ./services/product/.env
     networks:
       - ecommerce
 
   api-gateway:
-    build: ./api-gateway
+    build: ./services/api-gateway
     ports:
       - "3003:3003"
     environment:
