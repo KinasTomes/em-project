@@ -28,6 +28,12 @@ COPY pnpm-lock.yaml .
 # This leverages Docker caching, as this layer only changes when dependencies change.
 RUN pnpm install --frozen-lockfile
 
+# Copy shared packages source code AFTER install so pnpm can create proper workspace links
+COPY packages/config ./packages/config
+COPY packages/logger ./packages/logger
+COPY packages/message-broker ./packages/message-broker
+COPY packages/tracing ./packages/tracing
+
 # Stage 2: Build the final service image
 FROM node:18-alpine
 
@@ -36,15 +42,26 @@ RUN npm install -g pnpm@10.20.0
 
 WORKDIR /app
 
-# Copy the installed dependencies from the 'deps' stage
+# Copy workspace files
+COPY pnpm-workspace.yaml .
+COPY package.json .
+COPY pnpm-lock.yaml .
+
+# Copy the installed dependencies from deps stage (external packages only)
 COPY --from=deps /app/node_modules ./node_modules
+
+# Copy shared packages from deps stage
 COPY --from=deps /app/packages ./packages
-COPY --from=deps /app/services/auth ./
 
-# Copy the service's source code
-COPY services/auth/src ./src
-COPY services/auth/index.js .
-COPY services/auth/package.json .
+# Copy auth service files
+COPY services/auth ./services/auth
 
-# Set the command to start the app
-CMD [ "pnpm", "start" ]
+# Set working directory back to root for pnpm workspace
+WORKDIR /app
+
+# Run pnpm install again to create symlinks for workspace packages
+# Uses existing node_modules so it only creates workspace links
+RUN pnpm install --frozen-lockfile
+
+# Set the command to start the auth service using pnpm filter
+CMD [ "pnpm", "--filter", "@ecommerce/auth", "start" ]

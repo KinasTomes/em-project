@@ -7,18 +7,29 @@ class MessageBroker {
   }
 
   async connect() {
-    console.log("⏳ [Product] Connecting to RabbitMQ...");
+    await this.connectWithRetry();
+  }
 
-    setTimeout(async () => {
+  async connectWithRetry(retries = 5, delay = 5000) {
+    for (let i = 1; i <= retries; i++) {
       try {
+        console.log(`⏳ [Product] Connecting to RabbitMQ... (Attempt ${i}/${retries})`);
         const connection = await amqp.connect(config.rabbitMQURI);
         this.channel = await connection.createChannel();
         await this.channel.assertQueue("products");
         console.log("✓ [Product] RabbitMQ connected");
+        return; // Success, exit the loop
       } catch (err) {
-        console.error("✗ [Product] Failed to connect to RabbitMQ:", err.message);
+        console.error(`✗ [Product] Failed to connect to RabbitMQ: ${err.message}`);
+        if (i < retries) {
+          console.log(`Retrying in ${delay / 1000} seconds...`);
+          await new Promise(res => setTimeout(res, delay));
+        } else {
+          console.error("✗ [Product] Could not connect to RabbitMQ after all retries. Exiting.");
+          // process.exit(1); // Optional: exit if connection is critical
+        }
       }
-    }, 20000); // delay 10 seconds to wait for RabbitMQ to start
+    }
   }
 
   async publishMessage(queue, message) {
