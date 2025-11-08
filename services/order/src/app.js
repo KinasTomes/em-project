@@ -26,13 +26,12 @@ class App {
     console.log("MongoDB disconnected");
   }
 
-  async setupOrderConsumer() {
-    console.log("⏳ [Order] Connecting to RabbitMQ...");
-  
-    setTimeout(async () => {
+  async setupOrderConsumer(retries = 5, delay = 5000) {
+    for (let i = 1; i <= retries; i++) {
       try {
-  const amqpServer = config.rabbitMQURI;
-  const connection = await amqp.connect(amqpServer);
+        console.log(`⏳ [Order] Connecting to RabbitMQ... (Attempt ${i}/${retries})`);
+        const amqpServer = config.rabbitMQURI;
+        const connection = await amqp.connect(amqpServer);
         console.log("✓ [Order] RabbitMQ connected");
         logger.info({ rabbitMQURI: config.rabbitMQURI }, "RabbitMQ connected");
         const channel = await connection.createChannel();
@@ -66,11 +65,18 @@ class App {
             Buffer.from(JSON.stringify({ orderId, user, products: savedProducts, totalPrice }))
           );
         });
+        return; // Success, exit the retry loop
       } catch (err) {
-        console.error("✗ [Order] Failed to connect to RabbitMQ:", err.message);
-        logger.error({ error: err.message }, "Failed to connect to RabbitMQ");
+        console.error(`✗ [Order] Failed to connect to RabbitMQ: ${err.message}`);
+        logger.error({ error: err.message, attempt: i }, "Failed to connect to RabbitMQ");
+        if (i < retries) {
+          console.log(`Retrying in ${delay / 1000} seconds...`);
+          await new Promise(res => setTimeout(res, delay));
+        } else {
+          console.error("✗ [Order] Could not connect to RabbitMQ after all retries.");
+        }
       }
-    }, 10000); // add a delay to wait for RabbitMQ to start in docker-compose
+    }
   }
 
 
