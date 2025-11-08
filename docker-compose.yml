@@ -1,59 +1,18 @@
 version: "3.8"
 
+# ==============================================================================
+# E-COMMERCE MICROSERVICES - DOCKER COMPOSE
+# ==============================================================================
+# Defines the services, networks, and volumes for the entire application stack.
+# To run:
+# 1. Copy .env.example to .env and fill in the values.
+# 2. Run `docker compose up --build`
+# ==============================================================================
+
 services:
-  auth:
-    build:
-      context: .
-      dockerfile: ./services/auth/Dockerfile
-    ports:
-      - "3000:3000"
-    env_file:
-      - ./services/auth/.env
-    networks:
-      - ecommerce
-
-  rabbitmq:
-    image: rabbitmq:3.8-management-alpine
-    container_name: 'rabbitmq'
-    ports:
-        - 5672:5672
-        - 15672:15672
-    volumes:
-        - ~/.docker-conf/rabbitmq/data/:/var/lib/rabbitmq/
-        - ~/.docker-conf/rabbitmq/log/:/var/log/rabbitmq
-    networks:
-        - ecommerce
-
-  order:
-    build:
-      context: .
-      dockerfile: ./services/order/Dockerfile
-    ports:
-      - "3002:3002"
-    depends_on:
-      - rabbitmq
-    environment:
-      - RABBITMQ_URL=amqp://rabbitmq:5672
-    env_file:
-      - ./services/order/.env
-    networks:
-      - ecommerce
-
-  product:
-    build:
-      context: .
-      dockerfile: ./services/product/Dockerfile
-    ports:
-      - "3001:3001"
-    depends_on:
-      - rabbitmq
-    environment:
-      - RABBITMQ_URL=amqp://rabbitmq:5672
-    env_file:
-      - ./services/product/.env
-    networks:
-      - ecommerce
-
+  #----------------------------------------------------------------
+  # 1. API Gateway Service
+  #----------------------------------------------------------------
   api-gateway:
     build:
       context: .
@@ -61,9 +20,165 @@ services:
     ports:
       - "3003:3003"
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - NODE_ENV=production
+      - PORT=3003
+      - AUTH_SERVICE_URL=http://auth:3001
+      - PRODUCT_SERVICE_URL=http://product:3004
+      - ORDER_SERVICE_URL=http://order:3002
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    depends_on:
+      - auth
+      - product
+      - order
+      - jaeger
     networks:
-      - ecommerce
+      - ecommerce-network
 
+  #----------------------------------------------------------------
+  # 2. Auth Service
+  #----------------------------------------------------------------
+  auth:
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - MONGODB_AUTH_URI=mongodb://root:example@mongo_auth:27017/auth?authSource=admin
+      - JWT_SECRET=${JWT_SECRET:-your_super_secret_jwt_key_change_in_production}
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    depends_on:
+      - mongo_auth
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 3. Product Service
+  #----------------------------------------------------------------
+  product:
+    build:
+      context: .
+      dockerfile: ./services/product/Dockerfile
+    ports:
+      - "3004:3004"
+    environment:
+      - NODE_ENV=production
+      - PORT=3004
+      - MONGODB_PRODUCT_URI=mongodb://root:example@mongo_product:27017/product?authSource=admin
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    depends_on:
+      - mongo_product
+      - rabbitmq
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 4. Order Service
+  #----------------------------------------------------------------
+  order:
+    build:
+      context: .
+      dockerfile: ./services/order/Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - MONGODB_ORDER_URI=mongodb://root:example@mongo_order:27017/order?authSource=admin
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    depends_on:
+      - mongo_order
+      - rabbitmq
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 5. INFRASTRUCTURE
+  #----------------------------------------------------------------
+  # RabbitMQ for Message Brokering
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: 'rabbitmq'
+    ports:
+      - "5672:5672"   # AMQP port
+      - "15672:15672" # Management UI
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Jaeger for Distributed Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: 'jaeger'
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4318:4318"   # OTLP HTTP receiver
+    networks:
+      - ecommerce-network
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  # MongoDB for Auth Service
+  mongo_auth:
+    image: mongo:latest
+    container_name: 'mongo_auth'
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_auth_data:/data/db
+
+  # MongoDB for Product Service
+  mongo_product:
+    image: mongo:latest
+    container_name: 'mongo_product'
+    ports:
+      - "27018:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_product_data:/data/db
+
+  # MongoDB for Order Service
+  mongo_order:
+    image: mongo:latest
+    container_name: 'mongo_order'
+    ports:
+      - "27019:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_order_data:/data/db
+
+#----------------------------------------------------------------
+# 6. NETWORKS & VOLUMES
+#----------------------------------------------------------------
 networks:
-  ecommerce:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  mongo_auth_data:
+  mongo_product_data:
+  mongo_order_data:

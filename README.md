@@ -217,81 +217,53 @@ pnpm install
 
 ### Cấu hình Environment Variables
 
-Bạn có **3 lựa chọn** để cấu hình `.env`:
-
-#### **Option 1: Shared Config (Recommended for Development)**
-Tạo một file `.env` ở workspace root cho tất cả services:
+Tạo một file `.env` ở thư mục gốc của dự án bằng cách sao chép từ file `.env.example`.
 
 ```bash
-# Copy template
+# Copy the template to create your own environment file
 cp .env.example .env
 
-# Edit .env với giá trị thực
+# You can now edit the .env file if you need to change default ports or secrets
 nano .env
 ```
 
-#### **Option 2: Per-Service Config (Recommended for Testing)**
-Mỗi service có file `.env` riêng:
-
-```bash
-# Auth service
-cp services/auth/.env.example services/auth/.env
-nano services/auth/.env
-
-# Product service
-cp services/product/.env.example services/product/.env
-
-# Order service  
-cp services/order/.env.example services/order/.env
-
-# API Gateway
-cp services/api-gateway/.env.example services/api-gateway/.env
-```
-
-#### **Option 3: Environment Variables (Production)**
-Set trực tiếp trong shell hoặc Docker Compose:
-
-```bash
-export NODE_ENV=production
-export JWT_SECRET=your-super-secret-key-min-32-chars
-# ... etc
-```
-
-**💡 Priority:** Service `.env` > Root `.env` > Environment Variables
+File `.env` ở gốc sẽ được tự động sử dụng bởi tất cả các services khi chạy bằng Docker Compose.
 
 ### Chạy với Docker (Recommended)
 
+Phương pháp này sẽ khởi chạy toàn bộ hệ thống, bao gồm tất cả các microservices, databases, RabbitMQ và Jaeger để tracing.
+
 ```bash
-# Build tất cả services
-docker compose build
+# Build và chạy toàn bộ hệ thống ở chế độ nền
+docker compose up --build -d
 
-# Chạy toàn bộ hệ thống
-docker compose up
-
-# Hoặc chạy background
-docker compose up -d
-
-# Xem logs
+# Xem logs từ tất cả các container
 docker compose logs -f
 
-# Dừng hệ thống
-docker compose down
+# Để xem log của một service cụ thể (ví dụ: auth)
+docker compose logs -f auth
+
+# Dừng và xóa toàn bộ container, network và volume
+docker compose down -v
 ```
 
-**Services sẽ chạy tại:**
-- API Gateway: http://localhost:3003
-- Auth Service: http://localhost:3000
-- Product Service: http://localhost:3001
-- Order Service: http://localhost:3002
-- RabbitMQ Management: http://localhost:15672 (user: `guest`, pass: `guest`)
+**Các services sẽ có thể truy cập tại:**
+- **API Gateway**: http://localhost:3003
+- **Auth Service**: http://localhost:3000
+- **Product Service**: http://localhost:3001
+- **Order Service**: http://localhost:3002
+- **RabbitMQ Management**: http://localhost:15672 (user: `guest`, pass: `guest`)
+- **Jaeger UI (Tracing)**: http://localhost:16686
 
 ### Chạy local (Development)
 
-```bash
-# Cần chạy MongoDB và RabbitMQ trước
-# Hoặc dùng docker-compose chỉ cho infrastructure:
-docker compose up rabbitmq -d
+Nếu bạn muốn chạy code của các service trên máy local (ví dụ để debug) nhưng vẫn sử dụng các infrastructure (DBs, RabbitMQ) từ Docker.
 
+```bash
+# 1. Chỉ khởi chạy các infrastructure services
+docker compose up -d mongo_auth mongo_product mongo_order rabbitmq jaeger
+
+# 2. Chạy các service của bạn ở các terminal riêng biệt
 # Terminal 1 - Auth
 pnpm dev:auth
 
