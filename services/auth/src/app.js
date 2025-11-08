@@ -18,7 +18,7 @@ class App {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log("MongoDB connected");
+    console.log("✓ [Auth] MongoDB connected");
   }
 
   async disconnectDB() {
@@ -38,7 +38,10 @@ class App {
   }
 
   start() {
-    this.server = this.app.listen(3000, () => console.log("Server started on port 3000"));
+    this.server = this.app.listen(config.port, () => {
+      console.log(`✓ [Auth] Server started on port ${config.port}`);
+      console.log(`✓ [Auth] Ready`);
+    });
   }
 
   async stop() {

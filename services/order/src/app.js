@@ -16,7 +16,7 @@ class App {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log("MongoDB connected");
+    console.log("✓ [Order] MongoDB connected");
   }
 
   async disconnectDB() {
@@ -25,19 +25,19 @@ class App {
   }
 
   async setupOrderConsumer() {
-    console.log("Connecting to RabbitMQ...");
+    console.log("⏳ [Order] Connecting to RabbitMQ...");
   
     setTimeout(async () => {
       try {
-        const amqpServer = "amqp://rabbitmq:5672";
-        const connection = await amqp.connect(amqpServer);
-        console.log("Connected to RabbitMQ");
+  const amqpServer = config.rabbitMQURI;
+  const connection = await amqp.connect(amqpServer);
+        console.log("✓ [Order] RabbitMQ connected");
         const channel = await connection.createChannel();
         await channel.assertQueue("orders");
   
         channel.consume("orders", async (data) => {
           // Consume messages from the order queue on buy
-          console.log("Consuming ORDER service");
+          console.log("⚡ [Order] Processing order...");
           const { products, username, orderId } = JSON.parse(data.content);
   
           const newOrder = new Order({
@@ -51,7 +51,7 @@ class App {
   
           // Send ACK to ORDER service
           channel.ack(data);
-          console.log("Order saved to DB and ACK sent to ORDER queue");
+          console.log("✓ [Order] Order saved to DB and ACK sent");
   
           // Send fulfilled order to PRODUCTS service
           // Include orderId in the message
@@ -62,7 +62,7 @@ class App {
           );
         });
       } catch (err) {
-        console.error("Failed to connect to RabbitMQ:", err.message);
+        console.error("✗ [Order] Failed to connect to RabbitMQ:", err.message);
       }
     }, 10000); // add a delay to wait for RabbitMQ to start in docker-compose
   }
@@ -70,9 +70,10 @@ class App {
 
 
   start() {
-    this.server = this.app.listen(config.port, () =>
-      console.log(`Server started on port ${config.port}`)
-    );
+    this.server = this.app.listen(config.port, () => {
+      console.log(`✓ [Order] Server started on port ${config.port}`);
+      console.log(`✓ [Order] Ready`);
+    });
   }
 
   async stop() {

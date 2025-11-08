@@ -15,5 +15,8 @@
   "author": "",
   "license": "ISC",
   "private": true,
-  "packageManager": "pnpm@10.20.0"
+  "packageManager": "pnpm@10.20.0",
+  "devDependencies": {
+    "mocha": "^10.8.2"
+  }
 }

@@ -26,9 +26,10 @@
 
 - ✅ **Clean Architecture** - Kiến trúc phân lớp rõ ràng (Controllers, Services, Repositories, Models)
 - ✅ **Shared Packages** - Code dùng chung được tách thành các package riêng
+- ✅ **Strict Validation** - Environment variables được validate với Zod ngay khi khởi động
 - ✅ **Event-Driven** - Giao tiếp bất đồng bộ qua RabbitMQ
 - ✅ **Docker-first** - Dễ dàng triển khai và scale với Docker Compose
-- ✅ **Type-safe Configuration** - Config tập trung, an toàn
+- ✅ **Production-Ready** - Security checks và fail-fast error handling
 
 ---
 
@@ -212,29 +213,51 @@ cd em-project
 
 # 2. Cài đặt dependencies (cho tất cả workspaces)
 pnpm install
+```
 
-# 3. Tạo file .env cho mỗi service
+### Cấu hình Environment Variables
+
+Bạn có **3 lựa chọn** để cấu hình `.env`:
+
+#### **Option 1: Shared Config (Recommended for Development)**
+Tạo một file `.env` ở workspace root cho tất cả services:
+
+```bash
+# Copy template
+cp .env.example .env
+
+# Edit .env với giá trị thực
+nano .env
+```
+
+#### **Option 2: Per-Service Config (Recommended for Testing)**
+Mỗi service có file `.env` riêng:
+
+```bash
 # Auth service
-cat > services/auth/.env << EOF
-MONGODB_AUTH_URI=mongodb://localhost:27017/auth
-JWT_SECRET=your-super-secret-key-change-in-production
-PORT=3000
-EOF
+cp services/auth/.env.example services/auth/.env
+nano services/auth/.env
 
 # Product service
-cat > services/product/.env << EOF
-MONGODB_PRODUCT_URI=mongodb://localhost:27017/products
-RABBITMQ_URL=amqp://localhost:5672
-PORT=3001
-EOF
+cp services/product/.env.example services/product/.env
 
-# Order service
-cat > services/order/.env << EOF
-MONGODB_ORDER_URI=mongodb://localhost:27017/orders
-RABBITMQ_URL=amqp://localhost:5672
-PORT=3002
-EOF
+# Order service  
+cp services/order/.env.example services/order/.env
+
+# API Gateway
+cp services/api-gateway/.env.example services/api-gateway/.env
 ```
+
+#### **Option 3: Environment Variables (Production)**
+Set trực tiếp trong shell hoặc Docker Compose:
+
+```bash
+export NODE_ENV=production
+export JWT_SECRET=your-super-secret-key-min-32-chars
+# ... etc
+```
+
+**💡 Priority:** Service `.env` > Root `.env` > Environment Variables
 
 ### Chạy với Docker (Recommended)
 

@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      mocha:
+        specifier: ^10.8.2
+        version: 10.8.2
 
   packages/broker:
     dependencies:
@@ -19,6 +23,9 @@ importers:
       dotenv:
         specifier: ^16.6.1
         version: 16.6.1
+      zod:
+        specifier: ^4.1.12
+        version: 4.1.12
 
   packages/logger:
     dependencies:
@@ -28,6 +35,9 @@ importers:
 
   services/api-gateway:
     dependencies:
+      '@ecommerce/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       express:
         specifier: ^4.18.2
         version: 4.21.2
@@ -37,6 +47,9 @@ importers:
 
   services/auth:
     dependencies:
+      '@ecommerce/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -56,6 +69,9 @@ importers:
 
   services/order:
     dependencies:
+      '@ecommerce/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       amqplib:
         specifier: ^0.10.3
         version: 0.10.9
@@ -74,6 +90,9 @@ importers:
 
   services/product:
     dependencies:
+      '@ecommerce/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       amqplib:
         specifier: ^0.10.3
         version: 0.10.9
@@ -983,6 +1002,9 @@ packages:
   yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
+
+  zod@4.1.12:
+    resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
 
 snapshots:
 
@@ -1897,3 +1919,5 @@ snapshots:
       yargs-parser: 20.2.9
 
   yocto-queue@0.1.0: {}
+
+  zod@4.1.12: {}
