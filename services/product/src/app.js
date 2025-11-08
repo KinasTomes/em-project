@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const config = require("./config");
 const MessageBroker = require("./utils/messageBroker");
 const productsRouter = require("./routes/productRoutes");
+const logger = require("@ecommerce/logger");
 
 class App {
   constructor() {
@@ -19,6 +20,7 @@ class App {
       useUnifiedTopology: true,
     });
     console.log("✓ [Product] MongoDB connected");
+    logger.info({ mongoURI: config.mongoURI }, "MongoDB connected");
   }
 
   async disconnectDB() {
@@ -43,6 +45,7 @@ class App {
     this.server = this.app.listen(config.port, () => {
       console.log(`✓ [Product] Server started on port ${config.port}`);
       console.log(`✓ [Product] Ready`);
+      logger.info({ port: config.port }, "Product service ready");
     });
   }
 

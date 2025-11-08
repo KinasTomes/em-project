@@ -1,5 +1,5 @@
 {
-  "name": "@ecommerce/broker",
+  "name": "@ecommerce/message-broker",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -11,6 +11,10 @@
   "license": "ISC",
   "packageManager": "pnpm@10.20.0",
   "dependencies": {
-    "amqplib": "^0.10.9"
+    "@ecommerce/logger": "workspace:*",
+    "@opentelemetry/api": "^1.9.0",
+    "amqplib": "^0.10.9",
+    "redis": "^5.9.0",
+    "zod": "^4.1.12"
   }
 }

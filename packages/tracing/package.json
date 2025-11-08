@@ -1,5 +1,5 @@
 {
-  "name": "@ecommerce/logger",
+  "name": "@ecommerce/tracing",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -12,7 +12,10 @@
   "packageManager": "pnpm@10.20.0",
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "pino": "^10.1.0",
-    "pino-pretty": "^13.1.2"
+    "@opentelemetry/auto-instrumentations-node": "^0.67.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.208.0",
+    "@opentelemetry/resources": "^2.2.0",
+    "@opentelemetry/sdk-node": "^0.208.0",
+    "@opentelemetry/semantic-conventions": "^1.38.0"
   }
 }

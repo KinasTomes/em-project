@@ -12,6 +12,8 @@
   "license": "ISC",
   "dependencies": {
     "@ecommerce/config": "workspace:*",
+    "@ecommerce/logger": "workspace:*",
+    "@ecommerce/tracing": "workspace:*",
     "amqplib": "^0.10.3",
     "chai": "^4.3.7",
     "chai-http": "^4.3.0",

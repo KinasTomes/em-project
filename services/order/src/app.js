@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Order = require("./models/order");
 const amqp = require("amqplib");
 const config = require("./config");
+const logger = require("@ecommerce/logger");
 
 class App {
   constructor() {
@@ -17,6 +18,7 @@ class App {
       useUnifiedTopology: true,
     });
     console.log("✓ [Order] MongoDB connected");
+    logger.info({ mongoURI: config.mongoURI }, "MongoDB connected");
   }
 
   async disconnectDB() {
@@ -32,12 +34,14 @@ class App {
   const amqpServer = config.rabbitMQURI;
   const connection = await amqp.connect(amqpServer);
         console.log("✓ [Order] RabbitMQ connected");
+        logger.info({ rabbitMQURI: config.rabbitMQURI }, "RabbitMQ connected");
         const channel = await connection.createChannel();
         await channel.assertQueue("orders");
   
         channel.consume("orders", async (data) => {
           // Consume messages from the order queue on buy
           console.log("⚡ [Order] Processing order...");
+          logger.info("Processing new order");
           const { products, username, orderId } = JSON.parse(data.content);
   
           const newOrder = new Order({
@@ -52,6 +56,7 @@ class App {
           // Send ACK to ORDER service
           channel.ack(data);
           console.log("✓ [Order] Order saved to DB and ACK sent");
+          logger.info({ orderId: newOrder._id }, "Order saved and acknowledged");
   
           // Send fulfilled order to PRODUCTS service
           // Include orderId in the message
@@ -63,6 +68,7 @@ class App {
         });
       } catch (err) {
         console.error("✗ [Order] Failed to connect to RabbitMQ:", err.message);
+        logger.error({ error: err.message }, "Failed to connect to RabbitMQ");
       }
     }, 10000); // add a delay to wait for RabbitMQ to start in docker-compose
   }
@@ -73,6 +79,7 @@ class App {
     this.server = this.app.listen(config.port, () => {
       console.log(`✓ [Order] Server started on port ${config.port}`);
       console.log(`✓ [Order] Ready`);
+      logger.info({ port: config.port }, "Order service ready");
     });
   }
 
