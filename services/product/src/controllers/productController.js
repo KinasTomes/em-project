@@ -1,13 +1,16 @@
 const Product = require("../models/product");
-const messageBroker = require("../utils/messageBroker");
-const uuid = require("uuid");
+// const messageBroker = require("../utils/messageBroker");
+const fetch =
+  // dynamic import to support CJS
+  (...args) =>
+    import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const config = require("../config");
 
 /**
  * Class to hold the API implementation for the product services
  */
 class ProductController {
   constructor() {
-    this.createOrder = this.createOrder.bind(this);
     this.getProductById = this.getProductById.bind(this);
     this.updateProduct = this.updateProduct.bind(this);
     this.deleteProduct = this.deleteProduct.bind(this);
@@ -27,6 +30,71 @@ class ProductController {
       }
 
       await product.save({ timeout: 30000 });
+
+      // Synchronous integration: call Inventory API to create inventory
+      // Prefer req.body.available (fallback: initialStock) and sanitize
+      const rawAvailable =
+        req.body && typeof req.body.available !== "undefined"
+          ? req.body.available
+          : req.body && typeof req.body.initialStock !== "undefined"
+          ? req.body.initialStock
+          : undefined;
+      const parsedAvail = Number(rawAvailable);
+      const available =
+        Number.isFinite(parsedAvail) && parsedAvail >= 0
+          ? Math.floor(parsedAvail)
+          : 0;
+
+      // Build Inventory service base URL
+      const INVENTORY_BASE =
+        process.env.INVENTORY_URL || "http://localhost:3005";
+      const inventoryCreateUrl = `${INVENTORY_BASE}/api/inventory`;
+
+      try {
+        console.log(
+          `[Product Controller] Calling Inventory create for product ${product._id} with available=${available}`
+        );
+        const invBody = {
+          productId: product._id.toString(),
+          available,
+        };
+        console.log(
+          `[Product Controller] Inventory create payload: ${JSON.stringify(
+            invBody
+          )}`
+        );
+        const invRes = await fetch(inventoryCreateUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // forward auth for consistency if inventory protects the endpoint
+            Authorization: req.headers.authorization || "",
+          },
+          body: JSON.stringify(invBody),
+        });
+
+        if (!invRes.ok) {
+          const text = await invRes.text();
+          console.error(
+            `[Product Controller] Inventory create failed: status=${invRes.status} body=${text}`
+          );
+          // Rollback product if inventory creation fails to keep consistency
+          await Product.findByIdAndDelete(product._id);
+          return res.status(502).json({
+            message: "Failed to initialize inventory for product",
+            inventoryStatus: invRes.status,
+          });
+        }
+      } catch (err) {
+        console.error(
+          `[Product Controller] Error calling Inventory API: ${err.message}`
+        );
+        // Rollback product on network error
+        await Product.findByIdAndDelete(product._id);
+        return res
+          .status(502)
+          .json({ message: "Inventory service unavailable" });
+      }
 
       res.status(201).json(product);
     } catch (error) {
@@ -106,51 +174,30 @@ class ProductController {
         return res.status(404).json({ message: "Product not found" });
       }
 
+      // Synchronous: delete inventory record
+      const INVENTORY_BASE =
+        process.env.INVENTORY_URL || "http://localhost:3005";
+      try {
+        console.log(
+          `[Product Controller] Calling Inventory delete for product ${id}`
+        );
+        const invDel = await fetch(`${INVENTORY_BASE}/api/inventory/${id}`, {
+          method: "DELETE",
+          headers: { Authorization: token },
+        });
+        if (!(invDel.status === 204 || invDel.status === 404)) {
+          console.warn(
+            `[Product Controller] Inventory delete unexpected status=${invDel.status}`
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[Product Controller] Inventory delete failed (non-fatal): ${err.message}`
+        );
+        // choose not to rollback product deletion here; log for ops
+      }
+
       res.status(204).send();
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
-
-  async createOrder(req, res, next) {
-    try {
-      const token = req.headers.authorization;
-      if (!token) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const { ids } = req.body;
-
-      if (!ids || !Array.isArray(ids) || ids.length === 0) {
-        return res.status(400).json({ message: "Product IDs are required" });
-      }
-
-      const products = await Product.find({ _id: { $in: ids } });
-
-      if (products.length === 0) {
-        return res.status(404).json({ message: "No products found" });
-      }
-
-      const orderId = uuid.v4();
-
-      // Publish order message to RabbitMQ for order service to consume
-      await messageBroker.publishMessage("orders", {
-        products,
-        username: req.user.username,
-        orderId,
-      });
-
-      // Return immediately with order confirmation
-      return res.status(202).json({
-        message: "Order is being processed",
-        orderId,
-        products: products.map((p) => ({
-          id: p._id,
-          name: p.name,
-          price: p.price,
-        })),
-      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: "Server error" });

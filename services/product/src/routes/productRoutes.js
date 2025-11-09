@@ -6,17 +6,10 @@ const router = express.Router();
 const productController = new ProductController();
 
 // Product CRUD endpoints (RESTful)
-router.get("/products", isAuthenticated, productController.getProducts);
-router.get("/products/:id", isAuthenticated, productController.getProductById);
-router.post("/products", isAuthenticated, productController.createProduct);
-router.put("/products/:id", isAuthenticated, productController.updateProduct);
-router.delete(
-  "/products/:id",
-  isAuthenticated,
-  productController.deleteProduct
-);
-
-// Order endpoint - publishes to RabbitMQ queue for order service to consume
-router.post("/orders", isAuthenticated, productController.createOrder);
+router.get("/", isAuthenticated, productController.getProducts);
+router.get("/:id", isAuthenticated, productController.getProductById);
+router.post("/", isAuthenticated, productController.createProduct);
+router.put("/:id", isAuthenticated, productController.updateProduct);
+router.delete("/:id", isAuthenticated, productController.deleteProduct);
 
 module.exports = router;

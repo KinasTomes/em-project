@@ -34,7 +34,7 @@ class App {
   }
 
   setRoutes() {
-    this.app.use("/api", productsRouter);
+    this.app.use("/api/products", productsRouter);
   }
 
   setupMessageBroker() {
