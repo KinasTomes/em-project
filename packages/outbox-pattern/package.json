@@ -1,0 +1,27 @@
+{
+  "name": "@ecommerce/outbox-pattern",
+  "version": "1.0.0",
+  "description": "Transactional Outbox Pattern implementation for microservices",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "outbox",
+    "transactional-outbox",
+    "saga",
+    "microservices",
+    "event-sourcing",
+    "change-streams"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.20.0",
+  "dependencies": {
+    "@ecommerce/logger": "workspace:*",
+    "@ecommerce/message-broker": "workspace:*",
+    "mongoose": "^8.9.4",
+    "uuid": "^11.0.5"
+  }
+}
