@@ -130,33 +130,35 @@ class MessageBroker {
     try {
       const { productId } = data;
       // Prefer 'available' (new contract), fallback to legacy 'initialStock'
-      const rawAvailable =
+      const availableRaw =
         typeof data.available !== "undefined"
           ? data.available
           : typeof data.initialStock !== "undefined"
           ? data.initialStock
           : undefined;
 
-      const parsed = Number(rawAvailable);
-      const effectiveAvailable =
-        Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+      const availableParsed = Number(availableRaw);
+      const availableNormalized =
+        Number.isFinite(availableParsed) && availableParsed >= 0
+          ? Math.floor(availableParsed)
+          : 0;
 
       if (
-        rawAvailable !== undefined &&
-        Number(rawAvailable) !== effectiveAvailable
+        availableRaw !== undefined &&
+        Number(availableRaw) !== availableNormalized
       ) {
         logger.warn(
-          `[Inventory] Normalized available value '${rawAvailable}' for product ${productId} -> ${effectiveAvailable}`
+          `[Inventory] Normalized available value '${availableRaw}' for product ${productId} -> ${availableNormalized}`
         );
       }
 
       logger.info(
-        `[Inventory] Handling PRODUCT_CREATED event for ${productId} with available ${effectiveAvailable}`
+        `[Inventory] Handling PRODUCT_CREATED event for ${productId} with available ${availableNormalized}`
       );
 
-      await inventoryService.createInventory(productId, effectiveAvailable);
+      await inventoryService.createInventory(productId, availableNormalized);
       logger.info(
-        `[Inventory] Initialized inventory for product ${productId} with available ${effectiveAvailable}`
+        `[Inventory] Initialized inventory for product ${productId} with available ${availableNormalized}`
       );
     } catch (error) {
       logger.error(

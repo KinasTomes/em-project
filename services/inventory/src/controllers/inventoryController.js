@@ -41,7 +41,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error getting inventory: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 500;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 500;
       res.status(status).json({ message: error.message });
     }
   }
@@ -54,7 +58,7 @@ class InventoryController {
     try {
       const { productId } = req.body;
       // Prefer 'available', fallback to legacy 'initialStock'
-      const rawAvailable =
+      const availableRaw =
         typeof req.body.available !== "undefined"
           ? req.body.available
           : typeof req.body.initialStock !== "undefined"
@@ -65,12 +69,14 @@ class InventoryController {
         return res.status(400).json({ message: "productId is required" });
       }
 
-      const parsed = Number(rawAvailable);
-      const available =
-        Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+      const availableParsed = Number(availableRaw);
+      const availableNormalized =
+        Number.isFinite(availableParsed) && availableParsed >= 0
+          ? Math.floor(availableParsed)
+          : 0;
 
       logger.info(
-        `[InventoryController] createInventory productId=${productId} rawAvailable=${rawAvailable} normalized=${available}`
+        `[InventoryController] createInventory productId=${productId} availableRaw=${availableRaw} availableNormalized=${availableNormalized}`
       );
       logger.debug(
         `[InventoryController] full body received: ${JSON.stringify(req.body)}`
@@ -78,7 +84,7 @@ class InventoryController {
 
       const inventory = await inventoryService.createInventory(
         productId,
-        available
+        availableNormalized
       );
 
       res.status(201).json(inventory);
@@ -86,7 +92,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error creating inventory: ${error.message}`
       );
-      const status = error.message.includes("already exists") ? 409 : 500;
+      const status = error.message.includes("already exists")
+        ? 409
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 500;
       res.status(status).json({ message: error.message });
     }
   }
@@ -115,7 +125,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error reserving stock: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 500;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 500;
       res.status(status).json({ message: error.message });
     }
   }
@@ -146,7 +160,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error releasing stock: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 400;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 400;
       res.status(status).json({ message: error.message });
     }
   }
@@ -177,7 +195,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error confirming fulfillment: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 400;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 400;
       res.status(status).json({ message: error.message });
     }
   }
@@ -206,7 +228,11 @@ class InventoryController {
       });
     } catch (error) {
       logger.error(`[InventoryController] Error restocking: ${error.message}`);
-      const status = error.message.includes("not found") ? 404 : 500;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 500;
       res.status(status).json({ message: error.message });
     }
   }
@@ -238,7 +264,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error adjusting inventory: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 400;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 400;
       res.status(status).json({ message: error.message });
     }
   }
@@ -328,7 +358,11 @@ class InventoryController {
       logger.error(
         `[InventoryController] Error deleting inventory: ${error.message}`
       );
-      const status = error.message.includes("not found") ? 404 : 500;
+      const status = error.message.includes("not found")
+        ? 404
+        : error.message.includes("Invalid productId")
+        ? 400
+        : 500;
       res.status(status).json({ message: error.message });
     }
   }

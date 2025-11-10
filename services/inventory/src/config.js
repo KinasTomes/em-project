@@ -5,7 +5,6 @@ module.exports = {
   rabbitMQURI: sharedConfig.getRabbitMQUrl(),
   rabbitMQQueue: "inventory",
   port: sharedConfig.getPort(3005),
-  jwtSecret:
-    process.env.JWT_SECRET ||
-    "a-very-long-and-secure-secret-key-for-jwt-32-chars",
+  // Align JWT secret with shared configuration to keep services in sync
+  jwtSecret: sharedConfig.JWT_SECRET,
 };

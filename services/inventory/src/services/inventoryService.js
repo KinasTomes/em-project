@@ -27,11 +27,14 @@ class InventoryService {
   /**
    * Create or initialize inventory for a product
    */
-  async createInventory(productId, initialStock = 0) {
+  async createInventory(productId, available = 0) {
     try {
-      // Normalize initial stock value
-      const n = Number(initialStock);
-      const initial = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+      // Normalize incoming available value
+      const availableParsed = Number(available);
+      const availableNormalized =
+        Number.isFinite(availableParsed) && availableParsed >= 0
+          ? Math.floor(availableParsed)
+          : 0;
 
       // Check if inventory already exists
       const existing = await inventoryRepository.findByProductId(productId);
@@ -39,9 +42,12 @@ class InventoryService {
         logger.info(
           `[InventoryService] Inventory already exists for ${productId}`
         );
-        // If initial provided and greater than 0, restock (idempotent upsert behavior)
-        if (initial > 0) {
-          const updated = await this.restockInventory(productId, initial);
+        // If available provided and greater than 0, restock (idempotent upsert behavior)
+        if (availableNormalized > 0) {
+          const updated = await this.restockInventory(
+            productId,
+            availableNormalized
+          );
           return updated;
         }
         return existing;
@@ -49,13 +55,19 @@ class InventoryService {
 
       const inventory = await inventoryRepository.create({
         productId,
-        available: initial,
+        available: availableNormalized,
         reserved: 0,
         backorder: 0,
       });
 
+      if (inventory.available !== availableNormalized) {
+        logger.error(
+          `[InventoryService] Persisted availability mismatch for product ${productId}: expected ${availableNormalized}, got ${inventory.available}`
+        );
+      }
+
       logger.info(
-        `[InventoryService] Created inventory for product ${productId} with stock ${initial}`
+        `[InventoryService] Created inventory for product ${productId} with available ${availableNormalized}`
       );
       return inventory;
     } catch (error) {

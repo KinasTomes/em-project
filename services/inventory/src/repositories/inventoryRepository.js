@@ -1,5 +1,19 @@
 const Inventory = require("../models/inventory");
 const logger = require("@ecommerce/logger");
+const mongoose = require("mongoose");
+
+const normalizeProductId = (productId) => {
+  if (productId instanceof mongoose.Types.ObjectId) {
+    return productId;
+  }
+  if (
+    typeof productId === "string" &&
+    mongoose.Types.ObjectId.isValid(productId)
+  ) {
+    return new mongoose.Types.ObjectId(productId);
+  }
+  throw new Error("Invalid productId");
+};
 
 /**
  * Repository layer for Inventory operations
@@ -11,7 +25,8 @@ class InventoryRepository {
    */
   async findByProductId(productId) {
     try {
-      return await Inventory.findOne({ productId });
+      const normalizedId = normalizeProductId(productId);
+      return await Inventory.findOne({ productId: normalizedId });
     } catch (error) {
       logger.error(
         `[InventoryRepository] Error finding inventory: ${error.message}`
@@ -25,7 +40,11 @@ class InventoryRepository {
    */
   async create(inventoryData) {
     try {
-      const inventory = new Inventory(inventoryData);
+      const normalizedId = normalizeProductId(inventoryData.productId);
+      const inventory = new Inventory({
+        ...inventoryData,
+        productId: normalizedId,
+      });
       return await inventory.save();
     } catch (error) {
       logger.error(
@@ -40,10 +59,15 @@ class InventoryRepository {
    */
   async updateByProductId(productId, updateData) {
     try {
-      return await Inventory.findOneAndUpdate({ productId }, updateData, {
-        new: true,
-        runValidators: true,
-      });
+      const normalizedId = normalizeProductId(productId);
+      return await Inventory.findOneAndUpdate(
+        { productId: normalizedId },
+        updateData,
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
     } catch (error) {
       logger.error(
         `[InventoryRepository] Error updating inventory: ${error.message}`
@@ -57,8 +81,9 @@ class InventoryRepository {
    */
   async reserveIfAvailable(productId, quantity) {
     try {
+      const normalizedId = normalizeProductId(productId);
       const updated = await Inventory.findOneAndUpdate(
-        { productId, available: { $gte: quantity } },
+        { productId: normalizedId, available: { $gte: quantity } },
         { $inc: { available: -quantity, reserved: quantity } },
         { new: true }
       );
@@ -128,7 +153,8 @@ class InventoryRepository {
    */
   async deleteByProductId(productId) {
     try {
-      return await Inventory.findOneAndDelete({ productId });
+      const normalizedId = normalizeProductId(productId);
+      return await Inventory.findOneAndDelete({ productId: normalizedId });
     } catch (error) {
       logger.error(
         `[InventoryRepository] Error deleting inventory: ${error.message}`
@@ -144,7 +170,7 @@ class InventoryRepository {
     try {
       const operations = inventoryItems.map((item) => ({
         updateOne: {
-          filter: { productId: item.productId },
+          filter: { productId: normalizeProductId(item.productId) },
           update: { $set: item },
           upsert: true,
         },

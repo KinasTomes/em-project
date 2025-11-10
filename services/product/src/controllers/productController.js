@@ -73,16 +73,52 @@ class ProductController {
           body: JSON.stringify(invBody),
         });
 
+        const invPayloadText = await invRes.text();
+
         if (!invRes.ok) {
-          const text = await invRes.text();
           console.error(
-            `[Product Controller] Inventory create failed: status=${invRes.status} body=${text}`
+            `[Product Controller] Inventory create failed: status=${invRes.status} body=${invPayloadText}`
           );
           // Rollback product if inventory creation fails to keep consistency
           await Product.findByIdAndDelete(product._id);
           return res.status(502).json({
             message: "Failed to initialize inventory for product",
             inventoryStatus: invRes.status,
+          });
+        }
+
+        let inventoryPayload = null;
+        if (invPayloadText) {
+          try {
+            inventoryPayload = JSON.parse(invPayloadText);
+          } catch (err) {
+            console.warn(
+              `[Product Controller] Inventory create returned non-JSON payload: ${invPayloadText}`
+            );
+          }
+        }
+
+        if (!inventoryPayload) {
+          console.warn(
+            `[Product Controller] Inventory create response missing body for product ${product._id}`
+          );
+        }
+
+        const recordedAvailable = Number(inventoryPayload?.available);
+        if (
+          Number.isFinite(available) &&
+          available > 0 &&
+          inventoryPayload &&
+          recordedAvailable !== available
+        ) {
+          console.error(
+            `[Product Controller] Inventory create mismatch for product ${product._id}: expected available ${available} but inventory reported ${recordedAvailable}`
+          );
+          await Product.findByIdAndDelete(product._id);
+          return res.status(502).json({
+            message: "Inventory did not persist expected availability",
+            inventoryStatus: invRes.status,
+            inventoryResponse: inventoryPayload,
           });
         }
       } catch (err) {
