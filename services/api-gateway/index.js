@@ -30,6 +30,15 @@ app.use("/products", (req, res) => {
     { path: req.path, method: req.method },
     "Routing to product service"
   );
+  let suffix = "";
+  if (req.url === "/") {
+    suffix = "";
+  } else if (req.url.startsWith("/?")) {
+    suffix = `?${req.url.slice(2)}`;
+  } else {
+    suffix = req.url;
+  }
+  req.url = `/api/products${suffix}`;
   proxy.web(req, res, { target: config.productServiceUrl });
 });
 
@@ -39,7 +48,36 @@ app.use("/orders", (req, res) => {
     { path: req.path, method: req.method },
     "Routing to order service"
   );
+  let suffix = "";
+  if (req.url === "/") {
+    suffix = "";
+  } else if (req.url.startsWith("/?")) {
+    suffix = `?${req.url.slice(2)}`;
+  } else {
+    suffix = req.url;
+  }
+  req.url = `/api/orders${suffix}`;
   proxy.web(req, res, { target: config.orderServiceUrl });
+});
+
+// Route requests to the inventory service
+app.use("/inventory", (req, res) => {
+  logger.info(
+    { path: req.path, method: req.method },
+    "Routing to inventory service"
+  );
+  const inventoryServiceUrl =
+    process.env.INVENTORY_SERVICE_URL || "http://inventory:3005";
+  let suffix = "";
+  if (req.url === "/") {
+    suffix = "";
+  } else if (req.url.startsWith("/?")) {
+    suffix = `?${req.url.slice(2)}`;
+  } else {
+    suffix = req.url;
+  }
+  req.url = `/api/inventory${suffix}`;
+  proxy.web(req, res, { target: inventoryServiceUrl });
 });
 
 // Start the server

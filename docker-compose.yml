@@ -101,7 +101,30 @@ services:
       - ecommerce-network
 
   #----------------------------------------------------------------
-  # 5. INFRASTRUCTURE
+  # 5. Inventory Service
+  #----------------------------------------------------------------
+  inventory:
+    build:
+      context: .
+      dockerfile: ./services/inventory/Dockerfile
+    ports:
+      - "${INVENTORY_PORT:-3005}:3005"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${INVENTORY_PORT:-3005}
+      - MONGODB_INVENTORY_URI=${MONGODB_INVENTORY_URI}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - mongo_inventory
+      - rabbitmq
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 6. INFRASTRUCTURE
   #----------------------------------------------------------------
   # RabbitMQ for Message Brokering
   rabbitmq:
@@ -172,6 +195,20 @@ services:
     volumes:
       - mongo_order_data:/data/db
 
+  # MongoDB for Inventory Service
+  mongo_inventory:
+    image: mongo:latest
+    container_name: 'mongo_inventory'
+    ports:
+      - "27020:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_inventory_data:/data/db
+
 #----------------------------------------------------------------
 # 6. NETWORKS & VOLUMES
 #----------------------------------------------------------------
@@ -183,3 +220,4 @@ volumes:
   mongo_auth_data:
   mongo_product_data:
   mongo_order_data:
+  mongo_inventory_data:

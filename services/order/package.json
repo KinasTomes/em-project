@@ -15,9 +15,11 @@
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "amqplib": "^0.10.3",
+    "axios": "^1.6.0",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.0",
-    "mongoose": "^7.0.1"
+    "mongoose": "^7.0.1",
+    "uuid": "^9.0.0"
   }
 }
