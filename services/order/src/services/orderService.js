@@ -3,10 +3,12 @@ const Order = require("../models/order");
 const config = require("../config");
 const logger = require("@ecommerce/logger");
 const { v4: uuidv4 } = require("uuid");
+const mongoose = require("mongoose");
 
 class OrderService {
-  constructor(messageBroker) {
+  constructor(messageBroker, outboxManager = null) {
     this.messageBroker = messageBroker;
+    this.outboxManager = outboxManager;
     this.productServiceUrl =
       process.env.PRODUCT_SERVICE_URL || "http://product:3004";
   }
@@ -77,55 +79,97 @@ class OrderService {
       return acc + (Number.isFinite(price) ? price : 0) * quantity;
     }, 0);
 
-    // 3. Create order in DB
-    const order = new Order({
-      products: products.map((p, index) => ({
-        _id: p._id,
-        name: p.name,
-        price: p.price,
-        description: p.description,
-        quantity: quantities[index],
-        reserved: false,
-      })),
-      user: username,
-      totalPrice,
-      status: "PENDING",
-    });
+    // 3. Use MongoDB transaction to ensure atomicity
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    await order.save();
-    logger.info({ orderId: order._id, username }, "Order created successfully");
+    try {
+      // 3a. Create order in DB
+      const orderData = {
+        products: products.map((p, index) => ({
+          _id: p._id,
+          name: p.name,
+          price: p.price,
+          description: p.description,
+          quantity: quantities[index],
+          reserved: false,
+        })),
+        user: username,
+        totalPrice,
+        status: "PENDING",
+      };
 
-    // 4. Publish RESERVE requests to Inventory service (choreography)
-    const orderId = order._id.toString();
-    for (const prod of order.products) {
-      await this.messageBroker.publishMessage("inventory", {
-        type: "RESERVE",
-        data: {
-          orderId,
-          productId: prod._id.toString(),
-          quantity: prod.quantity,
-        },
-        timestamp: new Date().toISOString(),
-      });
+      const [order] = await Order.create([orderData], { session });
+      const orderId = order._id.toString();
+
+      logger.info({ orderId, username }, "Order created successfully");
+
+      // 3b. Create outbox events for RESERVE requests
+      if (this.outboxManager) {
+        // Use Outbox Pattern (Transactional Outbox)
+        for (let i = 0; i < order.products.length; i++) {
+          const prod = order.products[i];
+          await this.outboxManager.createEvent({
+            eventType: "RESERVE",
+            payload: {
+              orderId,
+              productId: prod._id.toString(),
+              quantity: prod.quantity,
+            },
+            session,
+            correlationId: orderId, // Use orderId as correlationId
+          });
+        }
+
+        logger.info(
+          { orderId, username },
+          "RESERVE events saved to outbox (transactional)"
+        );
+      } else {
+        // Fallback: Direct publish (old behavior - not transactional)
+        logger.warn(
+          "OutboxManager not available, falling back to direct publish"
+        );
+        for (const prod of order.products) {
+          await this.messageBroker.publishMessage("inventory", {
+            type: "RESERVE",
+            data: {
+              orderId,
+              productId: prod._id.toString(),
+              quantity: prod.quantity,
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
+      // 4. Commit transaction
+      await session.commitTransaction();
+      logger.info({ orderId }, "Transaction committed successfully");
+
+      return {
+        orderId,
+        message: "Order created and reservation requests published",
+        products: order.products.map((p) => ({
+          id: p._id,
+          name: p.name,
+          price: p.price,
+          quantity: p.quantity,
+        })),
+        totalPrice,
+        status: order.status,
+      };
+    } catch (error) {
+      // Rollback transaction on error
+      await session.abortTransaction();
+      logger.error(
+        { error: error.message, username },
+        "Failed to create order, transaction rolled back"
+      );
+      throw error;
+    } finally {
+      session.endSession();
     }
-
-    logger.info(
-      { orderId, username },
-      "RESERVE requests published to inventory queue"
-    );
-
-    return {
-      orderId,
-      message: "Order created and reservation requests published",
-      products: order.products.map((p) => ({
-        id: p._id,
-        name: p.name,
-        price: p.price,
-        quantity: p.quantity,
-      })),
-      totalPrice,
-      status: order.status,
-    };
   }
 
   /**

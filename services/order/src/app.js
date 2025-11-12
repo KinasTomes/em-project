@@ -9,13 +9,18 @@ const OrderService = require("./services/orderService");
 const OrderController = require("./controllers/orderController");
 const orderRoutes = require("./routes/orderRoutes");
 
+// Import Outbox Pattern (will use dynamic import for ES modules)
+let OutboxManager;
+
 class App {
   constructor() {
     this.app = express();
     this.messageBroker = null;
+    this.outboxManager = null;
     this.connectDB();
     this.setMiddlewares();
     this.setupMessageBroker();
+    this.initOutbox();
     this.setRoutes();
     this.setupOrderConsumer();
   }
@@ -30,9 +35,27 @@ class App {
     await this.messageBroker.connect();
   }
 
+  async initOutbox() {
+    try {
+      // Dynamic import for ES module
+      const { OutboxManager: OM } = await import("@ecommerce/outbox-pattern");
+      OutboxManager = OM;
+      
+      this.outboxManager = new OutboxManager("order", mongoose.connection);
+      logger.info("✓ [Order] OutboxManager initialized");
+      
+      // Start processor after MongoDB is connected
+      await this.outboxManager.startProcessor();
+      logger.info("✓ [Order] OutboxProcessor started");
+    } catch (error) {
+      logger.error({ error: error.message }, "Failed to initialize Outbox");
+      throw error;
+    }
+  }
+
   setRoutes() {
-    // Initialize service and controller
-    const orderService = new OrderService(this.messageBroker);
+    // Initialize service and controller with outboxManager
+    const orderService = new OrderService(this.messageBroker, this.outboxManager);
     const orderController = new OrderController(orderService);
 
     // Mount routes
