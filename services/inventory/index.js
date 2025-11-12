@@ -1,3 +1,14 @@
+// Initialize OpenTelemetry FIRST (before any other imports)
+const { initTracing } = require("@ecommerce/tracing");
+
+// Initialize tracing with service name and Jaeger endpoint
+const jaegerEndpoint = process.env.JAEGER_ENDPOINT || "http://localhost:4318/v1/traces";
+initTracing("inventory-service", jaegerEndpoint);
+
+// Load config BEFORE logger to ensure NODE_ENV is set
+require("@ecommerce/config");
+
+// Now import other modules
 const app = require("./src/app");
 const config = require("./src/config");
 const mongoose = require("mongoose");
@@ -11,24 +22,19 @@ const PORT = config.port;
 async function connectDB(retries = 5, delay = 5000) {
   for (let i = 1; i <= retries; i++) {
     try {
-      logger.info(
-        `⏳ [Inventory] Connecting to MongoDB... (Attempt ${i}/${retries})`
-      );
       await mongoose.connect(config.mongoURI, {
         serverSelectionTimeoutMS: 30000,
         socketTimeoutMS: 45000,
       });
-      logger.info("✓ [Inventory] MongoDB connected");
+      console.log("✓ [Inventory] MongoDB connected");
+      logger.info({ mongoURI: config.mongoURI }, "MongoDB connected");
       return;
     } catch (err) {
-      logger.error(`✗ [Inventory] MongoDB connection failed: ${err.message}`);
+      logger.error({ error: err.message }, `MongoDB connection failed (Attempt ${i}/${retries})`);
       if (i < retries) {
-        logger.info(`Retrying in ${delay / 1000} seconds...`);
         await new Promise((res) => setTimeout(res, delay));
       } else {
-        logger.error(
-          "✗ [Inventory] Could not connect to MongoDB after all retries. Exiting."
-        );
+        logger.error("Could not connect to MongoDB after all retries. Exiting.");
         process.exit(1);
       }
     }
@@ -40,6 +46,16 @@ async function connectDB(retries = 5, delay = 5000) {
  */
 async function startServer() {
   try {
+    // Log starting message (OUTSIDE callback like auth service)
+    logger.info("Starting inventory service...");
+
+    // Start Express server first (like other services)
+    app.listen(PORT, () => {
+      console.log(`✓ [Inventory] Server started on port ${PORT}`);
+      console.log(`✓ [Inventory] Ready`);
+      logger.info({ port: PORT }, "Inventory service ready");
+    });
+
     // Connect to MongoDB
     await connectDB();
 
@@ -47,13 +63,8 @@ async function startServer() {
     // If needed in future, re-enable:
     // const messageBroker = require("./src/utils/messageBroker");
     // await messageBroker.connect();
-
-    // Start Express server
-    app.listen(PORT, () => {
-      logger.info(`✓ [Inventory] Service running on port ${PORT}`);
-    });
   } catch (error) {
-    logger.error(`✗ [Inventory] Failed to start server: ${error.message}`);
+    logger.error({ error: error.message }, "Failed to start server");
     process.exit(1);
   }
 }

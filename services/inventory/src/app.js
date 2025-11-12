@@ -1,11 +1,7 @@
 const express = require("express");
 const logger = require("@ecommerce/logger");
-const { initTracing } = require("@ecommerce/tracing");
 
 const app = express();
-
-// Initialize tracing
-initTracing("inventory-service");
 
 // Middleware
 app.use(express.json());

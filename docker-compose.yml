@@ -153,6 +153,23 @@ services:
     environment:
       - COLLECTOR_OTLP_ENABLED=true
 
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    container_name: 'redis'
+    ports:
+      - "6379:6379"
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
   # MongoDB for Auth Service
   mongo_auth:
     image: mongo:latest
@@ -221,3 +238,4 @@ volumes:
   mongo_product_data:
   mongo_order_data:
   mongo_inventory_data:
+  redis_data:

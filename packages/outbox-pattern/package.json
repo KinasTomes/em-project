@@ -21,7 +21,8 @@
   "dependencies": {
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
-    "mongoose": "^8.9.4",
+    "@opentelemetry/api": "^1.9.0",
+    "mongoose": "^7.0.1",
     "uuid": "^11.0.5"
   }
 }
