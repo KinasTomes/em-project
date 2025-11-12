@@ -126,12 +126,13 @@ class OrderService {
           "RESERVE events saved to outbox (transactional)"
         );
       } else {
-        // Fallback: Direct publish (old behavior - not transactional)
+        // Fallback: Direct publish using MessageBroker package
         logger.warn(
           "OutboxManager not available, falling back to direct publish"
         );
         for (const prod of order.products) {
-          await this.messageBroker.publishMessage("inventory", {
+          // Use Broker.publish() API (not publishMessage)
+          await this.messageBroker.publish("inventory", {
             type: "RESERVE",
             data: {
               orderId,
@@ -139,8 +140,15 @@ class OrderService {
               quantity: prod.quantity,
             },
             timestamp: new Date().toISOString(),
+          }, {
+            eventId: uuidv4(),
+            correlationId: orderId
           });
         }
+        logger.info(
+          { orderId, username },
+          "RESERVE events published directly (fallback)"
+        );
       }
 
       // 4. Commit transaction
