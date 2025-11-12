@@ -6,6 +6,7 @@ const productSubSchema = new mongoose.Schema(
     name: String,
     price: Number,
     description: String,
+    quantity: { type: Number, required: true, min: 1 },
     reserved: { type: Boolean, default: false },
   },
   { _id: false }

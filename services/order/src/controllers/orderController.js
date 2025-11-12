@@ -18,17 +18,38 @@ class OrderController {
         return res.status(401).json({ message: "Unauthorized" });
       }
 
-      const { ids } = req.body;
+      const { productIds, quantities } = req.body;
 
       // Validate input
-      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
         return res.status(400).json({ message: "Product IDs are required" });
+      }
+
+      if (!quantities || !Array.isArray(quantities) || quantities.length === 0) {
+        return res.status(400).json({ message: "Quantities are required" });
+      }
+
+      if (productIds.length !== quantities.length) {
+        return res.status(400).json({ 
+          message: "Product IDs and quantities length must match" 
+        });
+      }
+
+      if (quantities.some(q => !Number.isInteger(q) || q <= 0)) {
+        return res.status(400).json({ 
+          message: "All quantities must be positive integers" 
+        });
       }
 
       const username = req.user.username;
 
       // Create order via service
-      const result = await this.orderService.createOrder(ids, username, token);
+      const result = await this.orderService.createOrder(
+        productIds, 
+        quantities, 
+        username, 
+        token
+      );
 
       return res.status(201).json(result);
     } catch (error) {

@@ -61,27 +61,30 @@ class OrderService {
   /**
    * Create a new order
    * @param {Array<string>} productIds - Array of product IDs
+   * @param {Array<number>} quantities - Array of quantities for each product
    * @param {string} username - Username from JWT token
    * @param {string} token - JWT token for authentication
    * @returns {Promise<Object>} Created order
    */
-  async createOrder(productIds, username, token) {
+  async createOrder(productIds, quantities, username, token) {
     // 1. Validate products
     const products = await this.validateProducts(productIds, token);
 
-    // 2. Calculate total price
-    const totalPrice = products.reduce((acc, product) => {
+    // 2. Calculate total price (price * quantity for each product)
+    const totalPrice = products.reduce((acc, product, index) => {
       const price = Number(product?.price || 0);
-      return acc + (Number.isFinite(price) ? price : 0);
+      const quantity = quantities[index];
+      return acc + (Number.isFinite(price) ? price : 0) * quantity;
     }, 0);
 
     // 3. Create order in DB
     const order = new Order({
-      products: products.map((p) => ({
+      products: products.map((p, index) => ({
         _id: p._id,
         name: p.name,
         price: p.price,
         description: p.description,
+        quantity: quantities[index],
         reserved: false,
       })),
       user: username,
@@ -100,7 +103,7 @@ class OrderService {
         data: {
           orderId,
           productId: prod._id.toString(),
-          quantity: 1,
+          quantity: prod.quantity,
         },
         timestamp: new Date().toISOString(),
       });
@@ -118,6 +121,7 @@ class OrderService {
         id: p._id,
         name: p.name,
         price: p.price,
+        quantity: p.quantity,
       })),
       totalPrice,
       status: order.status,
