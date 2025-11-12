@@ -120,39 +120,73 @@ class App {
                 "Inventory reserved successfully"
               );
               try {
-                // Mark product as reserved on the order and set status to CONFIRMED when all reserved
                 const orderId = payload.orderId;
                 const productId = payload.productId;
                 const order = await Order.findById(orderId);
+                
                 if (order) {
-                  let changed = false;
-                  order.products = order.products.map((p) => {
-                    if (p._id.toString() === productId) {
-                      changed = true;
-                      return { ...p.toObject(), reserved: true };
-                    }
-                    return p;
-                  });
+                  // Use MongoDB Transaction for atomicity
+                  const session = await mongoose.startSession();
+                  session.startTransaction();
 
-                  // If all products reserved, mark CONFIRMED
-                  const allReserved = order.products.every(
-                    (p) => p.reserved === true
-                  );
-                  if (allReserved) {
-                    order.status = "CONFIRMED";
-                    // Optionally publish ORDER_CONFIRMED
-                    await this.messageBroker.publishMessage("orders", {
-                      type: "ORDER_CONFIRMED",
-                      data: { orderId, timestamp: new Date().toISOString() },
+                  try {
+                    // Mark product as reserved
+                    let changed = false;
+                    order.products = order.products.map((p) => {
+                      if (p._id.toString() === productId) {
+                        changed = true;
+                        return { ...p.toObject(), reserved: true };
+                      }
+                      return p;
                     });
-                    logger.info(
-                      { orderId },
-                      "Order confirmed (all items reserved)"
-                    );
-                  }
 
-                  if (changed) {
-                    await order.save();
+                    // If all products reserved, mark CONFIRMED
+                    const allReserved = order.products.every(
+                      (p) => p.reserved === true
+                    );
+                    
+                    if (allReserved) {
+                      order.status = "CONFIRMED";
+                      
+                      // Save order
+                      if (changed) {
+                        await order.save({ session });
+                      }
+
+                      // Use Outbox Pattern to publish ORDER_CONFIRMED
+                      if (this.outboxManager) {
+                        await this.outboxManager.createEvent({
+                          eventType: "ORDER_CONFIRMED",
+                          payload: {
+                            orderId,
+                            timestamp: new Date().toISOString()
+                          },
+                          session,
+                          correlationId: orderId
+                        });
+                        logger.info(
+                          { orderId },
+                          "Order confirmed, event saved to outbox"
+                        );
+                      }
+                    } else {
+                      // Just save the reservation status
+                      if (changed) {
+                        await order.save({ session });
+                      }
+                    }
+
+                    await session.commitTransaction();
+                    logger.info({ orderId, productId }, "Order updated successfully");
+                    
+                  } catch (txError) {
+                    await session.abortTransaction();
+                    logger.error(
+                      { error: txError.message, orderId },
+                      "Transaction failed, rolled back"
+                    );
+                  } finally {
+                    session.endSession();
                   }
                 } else {
                   logger.warn(
@@ -179,27 +213,70 @@ class App {
               try {
                 const orderId = payload.orderId;
                 const order = await Order.findById(orderId);
+                
                 if (order) {
-                  order.status = "CANCELLED";
-                  await order.save();
-                  // Release any previously reserved items for this order
-                  for (const p of order.products.filter((pp) => pp.reserved)) {
-                    await this.messageBroker.publishMessage("inventory", {
-                      type: "RELEASE",
-                      data: {
-                        orderId,
-                        productId: p._id.toString(),
-                        quantity: 1,
-                      },
-                      timestamp: new Date().toISOString(),
-                    });
+                  // Use MongoDB Transaction for atomicity
+                  const session = await mongoose.startSession();
+                  session.startTransaction();
+
+                  try {
+                    // Cancel order
+                    order.status = "CANCELLED";
+                    await order.save({ session });
+
+                    // Release any previously reserved items (compensation)
+                    const reservedProducts = order.products.filter((pp) => pp.reserved);
+                    
+                    if (reservedProducts.length > 0 && this.outboxManager) {
+                      for (const p of reservedProducts) {
+                        await this.outboxManager.createEvent({
+                          eventType: "RELEASE",
+                          payload: {
+                            orderId,
+                            productId: p._id.toString(),
+                            quantity: p.quantity || 1,
+                            reason: "ORDER_CANCELLED"
+                          },
+                          session,
+                          correlationId: orderId
+                        });
+                      }
+                      logger.info(
+                        { orderId, releasedCount: reservedProducts.length },
+                        "RELEASE compensation events saved to outbox"
+                      );
+                    }
+
+                    // Publish ORDER_CANCELLED event
+                    if (this.outboxManager) {
+                      await this.outboxManager.createEvent({
+                        eventType: "ORDER_CANCELLED",
+                        payload: {
+                          orderId,
+                          reason: payload.reason,
+                          timestamp: new Date().toISOString()
+                        },
+                        session,
+                        correlationId: orderId
+                      });
+                      logger.info(
+                        { orderId, reason: payload.reason },
+                        "ORDER_CANCELLED event saved to outbox"
+                      );
+                    }
+
+                    await session.commitTransaction();
+                    logger.info({ orderId }, "Order cancelled successfully");
+                    
+                  } catch (txError) {
+                    await session.abortTransaction();
+                    logger.error(
+                      { error: txError.message, orderId },
+                      "Transaction failed, rolled back"
+                    );
+                  } finally {
+                    session.endSession();
                   }
-                  // Optionally publish ORDER_CANCELLED
-                  await this.messageBroker.publishMessage("orders", {
-                    type: "ORDER_CANCELLED",
-                    data: { orderId, reason: payload.reason },
-                    timestamp: new Date().toISOString(),
-                  });
                 } else {
                   logger.warn(
                     { orderId: payload.orderId },
@@ -222,7 +299,144 @@ class App {
                 { orderId: payload.orderId },
                 "Payment completed successfully"
               );
-              // TODO: Update order status to 'paid'
+              try {
+                const orderId = payload.orderId;
+                const order = await Order.findById(orderId);
+                
+                if (order) {
+                  // Use MongoDB Transaction for atomicity
+                  const session = await mongoose.startSession();
+                  session.startTransaction();
+
+                  try {
+                    // Update order status to PAID
+                    order.status = "PAID";
+                    await order.save({ session });
+
+                    // Publish ORDER_PAID event (optional - for notification service)
+                    if (this.outboxManager) {
+                      await this.outboxManager.createEvent({
+                        eventType: "ORDER_PAID",
+                        payload: {
+                          orderId,
+                          transactionId: payload.transactionId,
+                          timestamp: new Date().toISOString()
+                        },
+                        session,
+                        correlationId: orderId
+                      });
+                      logger.info({ orderId }, "ORDER_PAID event saved to outbox");
+                    }
+
+                    await session.commitTransaction();
+                    logger.info({ orderId }, "Order marked as PAID");
+                    
+                  } catch (txError) {
+                    await session.abortTransaction();
+                    logger.error(
+                      { error: txError.message, orderId },
+                      "Transaction failed, rolled back"
+                    );
+                  } finally {
+                    session.endSession();
+                  }
+                } else {
+                  logger.warn(
+                    { orderId: payload.orderId },
+                    "Order not found to mark as paid"
+                  );
+                }
+              } catch (err) {
+                logger.error(
+                  { err: err.message },
+                  "Error updating order payment status"
+                );
+              }
+              break;
+
+            case "PAYMENT_FAILED":
+              console.log(
+                `✗ [Order] Payment failed for order ${payload.orderId}`
+              );
+              logger.warn(
+                { orderId: payload.orderId, reason: payload.reason },
+                "Payment failed"
+              );
+              try {
+                const orderId = payload.orderId;
+                const order = await Order.findById(orderId);
+                
+                if (order) {
+                  // Use MongoDB Transaction for atomicity (Saga Compensation)
+                  const session = await mongoose.startSession();
+                  session.startTransaction();
+
+                  try {
+                    // Cancel order
+                    order.status = "CANCELLED";
+                    await order.save({ session });
+
+                    // Release ALL reserved inventory (compensation)
+                    if (this.outboxManager) {
+                      for (const product of order.products) {
+                        await this.outboxManager.createEvent({
+                          eventType: "RELEASE",
+                          payload: {
+                            orderId,
+                            productId: product._id.toString(),
+                            quantity: product.quantity || 1,
+                            reason: "PAYMENT_FAILED"
+                          },
+                          session,
+                          correlationId: orderId
+                        });
+                      }
+                      logger.info(
+                        { orderId, productsCount: order.products.length },
+                        "RELEASE compensation events saved to outbox"
+                      );
+
+                      // Publish ORDER_CANCELLED event
+                      await this.outboxManager.createEvent({
+                        eventType: "ORDER_CANCELLED",
+                        payload: {
+                          orderId,
+                          reason: `Payment failed: ${payload.reason}`,
+                          timestamp: new Date().toISOString()
+                        },
+                        session,
+                        correlationId: orderId
+                      });
+                      logger.info(
+                        { orderId, reason: payload.reason },
+                        "ORDER_CANCELLED event saved to outbox"
+                      );
+                    }
+
+                    await session.commitTransaction();
+                    logger.info({ orderId }, "Order cancelled due to payment failure");
+                    
+                  } catch (txError) {
+                    await session.abortTransaction();
+                    logger.error(
+                      { error: txError.message, orderId },
+                      "Transaction failed, rolled back"
+                    );
+                  } finally {
+                    session.endSession();
+                  }
+                } else {
+                  logger.warn(
+                    { orderId: payload.orderId },
+                    "Order not found to cancel"
+                  );
+                }
+              } catch (err) {
+                logger.error(
+                  { err: err.message },
+                  "Error cancelling order after payment failure"
+                );
+              }
               break;
 
             default:
