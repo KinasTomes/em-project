@@ -1,248 +1,329 @@
-const express = require("express");
-const mongoose = require("mongoose");
-const Order = require("./models/order");
-const amqp = require("amqplib");
-const config = require("./config");
-const logger = require("@ecommerce/logger");
-const MessageBroker = require("./utils/messageBroker");
-const OrderService = require("./services/orderService");
-const OrderController = require("./controllers/orderController");
-const orderRoutes = require("./routes/orderRoutes");
+﻿const express = require('express')
+const mongoose = require('mongoose')
+const config = require('./config')
+const logger = require('@ecommerce/logger')
+const { Broker } = require('@ecommerce/message-broker')
+const Order = require('./models/order')
+const OrderService = require('./services/orderService')
+const OrderController = require('./controllers/orderController')
+const orderRoutes = require('./routes/orderRoutes')
+
+// Import Outbox Pattern dynamically because it is an ES module
+let OutboxManager
 
 class App {
-  constructor() {
-    this.app = express();
-    this.messageBroker = null;
-    this.connectDB();
-    this.setMiddlewares();
-    this.setupMessageBroker();
-    this.setRoutes();
-    this.setupOrderConsumer();
-  }
+	constructor() {
+		this.app = express()
+		this.broker = new Broker()
+		this.outboxManager = null
+		this.server = null
+	}
 
-  setMiddlewares() {
-    this.app.use(express.json());
-    this.app.use(express.urlencoded({ extended: false }));
-  }
+	setMiddlewares() {
+		this.app.use(express.json())
+		this.app.use(express.urlencoded({ extended: false }))
+	}
 
-  async setupMessageBroker() {
-    this.messageBroker = new MessageBroker();
-    await this.messageBroker.connect();
-  }
+	async initOutbox() {
+		try {
+			const { OutboxManager: OM } = await import('@ecommerce/outbox-pattern')
+			OutboxManager = OM
 
-  setRoutes() {
-    // Initialize service and controller
-    const orderService = new OrderService(this.messageBroker);
-    const orderController = new OrderController(orderService);
+			this.outboxManager = new OutboxManager('order', mongoose.connection)
+			logger.info('✓ [Order] OutboxManager initialized')
 
-    // Mount routes
-    this.app.use("/api/orders", orderRoutes(orderController));
-  }
+			await this.outboxManager.startProcessor()
+			logger.info('✓ [Order] OutboxProcessor started')
+		} catch (error) {
+			logger.error({ error: error.message }, 'Failed to initialize Outbox')
+			throw error
+		}
+	}
 
-  async connectDB() {
-    await mongoose.connect(config.mongoURI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("✓ [Order] MongoDB connected");
-    logger.info({ mongoURI: config.mongoURI }, "MongoDB connected");
-  }
+	setRoutes() {
+		if (!this.outboxManager) {
+			throw new Error('OutboxManager not initialized')
+		}
 
-  async disconnectDB() {
-    await mongoose.disconnect();
-    console.log("MongoDB disconnected");
-  }
+		const orderService = new OrderService(this.outboxManager)
+		const orderController = new OrderController(orderService)
+		this.app.use('/api/orders', orderRoutes(orderController))
+	}
 
-  async setupOrderConsumer(retries = 5, delay = 5000) {
-    // Consumer now only listens for events from other services
-    // (e.g., INVENTORY_RESERVED, PAYMENT_COMPLETED)
-    // Order creation is now handled via REST API
-    for (let i = 1; i <= retries; i++) {
-      try {
-        console.log(
-          `⏳ [Order] Setting up event consumer... (Attempt ${i}/${retries})`
-        );
-        const amqpServer = config.rabbitMQURI;
-        const connection = await amqp.connect(amqpServer);
-        console.log("✓ [Order] Event consumer RabbitMQ connected");
-        const channel = await connection.createChannel();
-        await channel.assertQueue("orders");
+	async connectDB() {
+		await mongoose.connect(config.mongoURI, {
+			useNewUrlParser: true,
+			useUnifiedTopology: true,
+		})
+		logger.info({ mongoURI: config.mongoURI }, '✓ [Order] MongoDB connected')
+	}
 
-        channel.consume("orders", async (data) => {
-          console.log("⚡ [Order] Received event...");
+	async disconnectDB() {
+		await mongoose.disconnect()
+		logger.info('✓ [Order] MongoDB disconnected')
+	}
 
-          let parsed;
-          try {
-            parsed = JSON.parse(data.content.toString());
-          } catch (parseError) {
-            console.error("✗ [Order] Failed to parse event", parseError);
-            logger.error(
-              { error: parseError.message },
-              "Failed to parse event message"
-            );
-            channel.reject(data, false);
-            return;
-          }
+	async _handleOrderEvent(message, metadata = {}) {
+		const { type, data: payload = {} } = message
+		const { eventId, correlationId } = metadata
 
-          const { type, data: payload = {} } = parsed;
+		logger.info({ eventId, correlationId, type }, '⚡ [Order] Received event')
 
-          // Handle events from other services
-          switch (type) {
-            case "INVENTORY_RESERVED":
-              console.log(
-                `✓ [Order] Inventory reserved for order ${payload.orderId}`
-              );
-              logger.info(
-                { orderId: payload.orderId },
-                "Inventory reserved successfully"
-              );
-              try {
-                // Mark product as reserved on the order and set status to CONFIRMED when all reserved
-                const orderId = payload.orderId;
-                const productId = payload.productId;
-                const order = await Order.findById(orderId);
-                if (order) {
-                  let changed = false;
-                  order.products = order.products.map((p) => {
-                    if (p._id.toString() === productId) {
-                      changed = true;
-                      return { ...p.toObject(), reserved: true };
-                    }
-                    return p;
-                  });
+		try {
+			switch (type) {
+				case 'INVENTORY_RESERVED':
+					await this._handleInventoryReserved(payload, correlationId)
+					break
+				case 'INVENTORY_RESERVE_FAILED':
+					await this._handleInventoryReserveFailed(payload, correlationId)
+					break
+				case 'PAYMENT_COMPLETED':
+					await this._handlePaymentCompleted(payload, correlationId)
+					break
+				case 'PAYMENT_FAILED':
+					await this._handlePaymentFailed(payload, correlationId)
+					break
+				default:
+					logger.warn({ type, correlationId }, '⚠️ [Order] Unknown event type')
+			}
+		} catch (error) {
+			logger.error(
+				{ error: error.message, eventId, type },
+				'❌ Error handling event'
+			)
+			throw error
+		}
+	}
 
-                  // If all products reserved, mark CONFIRMED
-                  const allReserved = order.products.every(
-                    (p) => p.reserved === true
-                  );
-                  if (allReserved) {
-                    order.status = "CONFIRMED";
-                    // Optionally publish ORDER_CONFIRMED
-                    await this.messageBroker.publishMessage("orders", {
-                      type: "ORDER_CONFIRMED",
-                      data: { orderId, timestamp: new Date().toISOString() },
-                    });
-                    logger.info(
-                      { orderId },
-                      "Order confirmed (all items reserved)"
-                    );
-                  }
+	async _handleInventoryReserved(payload, correlationId) {
+		logger.info(
+			{ orderId: payload.orderId, correlationId },
+			'Processing INVENTORY_RESERVED'
+		)
 
-                  if (changed) {
-                    await order.save();
-                  }
-                } else {
-                  logger.warn(
-                    { orderId: payload.orderId },
-                    "Order not found to update reservation"
-                  );
-                }
-              } catch (err) {
-                logger.error(
-                  { err: err.message },
-                  "Error updating order reservation status"
-                );
-              }
-              break;
+		const order = await Order.findById(payload.orderId)
+		if (!order) {
+			logger.warn(
+				{ orderId: payload.orderId, correlationId },
+				'Order not found for INVENTORY_RESERVED'
+			)
+			return
+		}
 
-            case "INVENTORY_RESERVE_FAILED":
-              console.log(
-                `✗ [Order] Inventory reserve failed for order ${payload.orderId}`
-              );
-              logger.warn(
-                { orderId: payload.orderId, reason: payload.reason },
-                "Inventory reservation failed"
-              );
-              try {
-                const orderId = payload.orderId;
-                const order = await Order.findById(orderId);
-                if (order) {
-                  order.status = "CANCELLED";
-                  await order.save();
-                  // Release any previously reserved items for this order
-                  for (const p of order.products.filter((pp) => pp.reserved)) {
-                    await this.messageBroker.publishMessage("inventory", {
-                      type: "RELEASE",
-                      data: {
-                        orderId,
-                        productId: p._id.toString(),
-                        quantity: 1,
-                      },
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-                  // Optionally publish ORDER_CANCELLED
-                  await this.messageBroker.publishMessage("orders", {
-                    type: "ORDER_CANCELLED",
-                    data: { orderId, reason: payload.reason },
-                    timestamp: new Date().toISOString(),
-                  });
-                } else {
-                  logger.warn(
-                    { orderId: payload.orderId },
-                    "Order not found to cancel"
-                  );
-                }
-              } catch (err) {
-                logger.error(
-                  { err: err.message },
-                  "Error cancelling order after reservation failure"
-                );
-              }
-              break;
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				let changed = false
+				order.products = order.products.map((product) => {
+					if (product._id.toString() === payload.productId) {
+						changed = true
+						return { ...product.toObject(), reserved: true }
+					}
+					return product
+				})
 
-            case "PAYMENT_COMPLETED":
-              console.log(
-                `✓ [Order] Payment completed for order ${payload.orderId}`
-              );
-              logger.info(
-                { orderId: payload.orderId },
-                "Payment completed successfully"
-              );
-              // TODO: Update order status to 'paid'
-              break;
+				if (changed) {
+					const allReserved = order.products.every(
+						(product) => product.reserved === true
+					)
+					if (allReserved) {
+						order.status = 'CONFIRMED'
+						await this.outboxManager.createEvent({
+							eventType: 'ORDER_CONFIRMED',
+							payload: {
+								orderId: order._id,
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+						})
+					}
 
-            default:
-              console.warn(`⚠️  [Order] Unknown event type: ${type}`);
-              logger.warn({ type }, "Received unknown event type");
-          }
+					await order.save({ session })
+				}
+			})
+		} finally {
+			session.endSession()
+		}
+	}
 
-          channel.ack(data);
-        });
-        return; // Success, exit the retry loop
-      } catch (err) {
-        console.error(
-          `✗ [Order] Failed to setup event consumer: ${err.message}`
-        );
-        logger.error(
-          { error: err.message, attempt: i },
-          "Failed to setup event consumer"
-        );
-        if (i < retries) {
-          console.log(`Retrying in ${delay / 1000} seconds...`);
-          await new Promise((res) => setTimeout(res, delay));
-        } else {
-          console.error(
-            "✗ [Order] Could not setup event consumer after all retries."
-          );
-        }
-      }
-    }
-  }
+	async _handleInventoryReserveFailed(payload, correlationId) {
+		logger.warn(
+			{ orderId: payload.orderId, reason: payload.reason, correlationId },
+			'Processing INVENTORY_RESERVE_FAILED'
+		)
 
-  start() {
-    this.server = this.app.listen(config.port, () => {
-      console.log(`✓ [Order] Server started on port ${config.port}`);
-      console.log(`✓ [Order] Ready`);
-      logger.info({ port: config.port }, "Order service ready");
-    });
-  }
+		const order = await Order.findById(payload.orderId)
+		if (!order) {
+			logger.warn(
+				{ orderId: payload.orderId, correlationId },
+				'Order not found for INVENTORY_RESERVE_FAILED'
+			)
+			return
+		}
 
-  async stop() {
-    await mongoose.disconnect();
-    this.server.close();
-    console.log("Server stopped");
-  }
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				order.status = 'CANCELLED'
+				await order.save({ session })
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: payload.reason,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+				})
+			})
+		} finally {
+			session.endSession()
+		}
+	}
+
+	async _handlePaymentCompleted(payload, correlationId) {
+		logger.info(
+			{ orderId: payload.orderId, correlationId },
+			'Processing PAYMENT_COMPLETED'
+		)
+
+		const order = await Order.findById(payload.orderId)
+		if (!order) {
+			logger.warn(
+				{ orderId: payload.orderId, correlationId },
+				'Order not found for PAYMENT_COMPLETED'
+			)
+			return
+		}
+
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				order.status = 'PAID'
+				await order.save({ session })
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_PAID',
+					payload: {
+						orderId: order._id,
+						transactionId: payload.transactionId,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+				})
+			})
+		} finally {
+			session.endSession()
+		}
+	}
+
+	async _handlePaymentFailed(payload, correlationId) {
+		logger.warn(
+			{ orderId: payload.orderId, reason: payload.reason, correlationId },
+			'Processing PAYMENT_FAILED'
+		)
+
+		const order = await Order.findById(payload.orderId)
+		if (!order) {
+			logger.warn(
+				{ orderId: payload.orderId, correlationId },
+				'Order not found for PAYMENT_FAILED'
+			)
+			return
+		}
+
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				order.status = 'CANCELLED'
+				await order.save({ session })
+
+				for (const product of order.products) {
+					if (product.reserved) {
+						await this.outboxManager.createEvent({
+							eventType: 'INVENTORY_RELEASE_REQUEST',
+							payload: {
+								type: 'RELEASE',
+								data: {
+									orderId: order._id,
+									productId: product._id.toString(),
+									quantity: product.quantity,
+									reason: 'PAYMENT_FAILED',
+								},
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+							destination: 'inventory',
+						})
+					}
+				}
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: `Payment failed: ${payload.reason}`,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+				})
+			})
+		} finally {
+			session.endSession()
+		}
+	}
+
+	async setupOrderConsumer() {
+		try {
+			logger.info(
+				'⏳ [Order] Setting up event consumer using @ecommerce/message-broker'
+			)
+			await this.broker.consume('orders', this._handleOrderEvent.bind(this))
+			logger.info('✓ [Order] Event consumer ready')
+		} catch (error) {
+			logger.error(
+				{ error: error.message },
+				'❌ Fatal: Unable to setup event consumer'
+			)
+		}
+	}
+
+	async start() {
+		await this.connectDB()
+		this.setMiddlewares()
+		await this.initOutbox()
+		this.setRoutes()
+		await this.setupOrderConsumer()
+
+		this.server = this.app.listen(config.port, () => {
+			logger.info({ port: config.port }, '✓ [Order] Server listening')
+		})
+	}
+
+	async stop() {
+		if (this.broker) {
+			await this.broker.close()
+			logger.info('✓ [Order] Broker connections closed')
+		}
+
+		if (this.outboxManager) {
+			await this.outboxManager.stopProcessor()
+			logger.info('✓ [Order] Outbox processor stopped')
+		}
+
+		await this.disconnectDB()
+
+		if (this.server) {
+			this.server.close()
+			logger.info('✓ [Order] Server stopped')
+		}
+	}
 }
 
-module.exports = App;
+module.exports = App

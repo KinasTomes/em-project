@@ -1,74 +1,89 @@
-const app = require("./src/app");
-const config = require("./src/config");
-const mongoose = require("mongoose");
-const logger = require("@ecommerce/logger");
+// Initialize OpenTelemetry FIRST (before any other imports)
+const { initTracing } = require('@ecommerce/tracing')
 
-const PORT = config.port;
+// Initialize tracing with service name and Jaeger endpoint
+const jaegerEndpoint =
+	process.env.JAEGER_ENDPOINT || 'http://localhost:4318/v1/traces'
+initTracing('inventory-service', jaegerEndpoint)
+
+// Load config BEFORE logger to ensure NODE_ENV is set
+require('@ecommerce/config')
+
+// Now import other modules
+const app = require('./src/app')
+const config = require('./src/config')
+const mongoose = require('mongoose')
+const logger = require('@ecommerce/logger')
+const messageBroker = require('./src/utils/messageBroker')
+
+const PORT = config.port
 
 /**
  * Connect to MongoDB with retry logic
  */
 async function connectDB(retries = 5, delay = 5000) {
-  for (let i = 1; i <= retries; i++) {
-    try {
-      logger.info(
-        `⏳ [Inventory] Connecting to MongoDB... (Attempt ${i}/${retries})`
-      );
-      await mongoose.connect(config.mongoURI, {
-        serverSelectionTimeoutMS: 30000,
-        socketTimeoutMS: 45000,
-      });
-      logger.info("✓ [Inventory] MongoDB connected");
-      return;
-    } catch (err) {
-      logger.error(`✗ [Inventory] MongoDB connection failed: ${err.message}`);
-      if (i < retries) {
-        logger.info(`Retrying in ${delay / 1000} seconds...`);
-        await new Promise((res) => setTimeout(res, delay));
-      } else {
-        logger.error(
-          "✗ [Inventory] Could not connect to MongoDB after all retries. Exiting."
-        );
-        process.exit(1);
-      }
-    }
-  }
+	for (let i = 1; i <= retries; i++) {
+		try {
+			await mongoose.connect(config.mongoURI, {
+				serverSelectionTimeoutMS: 30000,
+				socketTimeoutMS: 45000,
+			})
+			console.log('✓ [Inventory] MongoDB connected')
+			logger.info({ mongoURI: config.mongoURI }, 'MongoDB connected')
+			return
+		} catch (err) {
+			logger.error(
+				{ error: err.message },
+				`MongoDB connection failed (Attempt ${i}/${retries})`
+			)
+			if (i < retries) {
+				await new Promise((res) => setTimeout(res, delay))
+			} else {
+				logger.error('Could not connect to MongoDB after all retries. Exiting.')
+				process.exit(1)
+			}
+		}
+	}
 }
 
 /**
  * Start the server
  */
 async function startServer() {
-  try {
-    // Connect to MongoDB
-    await connectDB();
+	try {
+		logger.info('Starting inventory service...')
 
-    // Event-driven broker disabled in synchronous mode
-    // If needed in future, re-enable:
-    // const messageBroker = require("./src/utils/messageBroker");
-    // await messageBroker.connect();
+		// Start Express server first
+		app.listen(PORT, () => {
+			console.log(`✓ [Inventory] Server started on port ${PORT}`)
+			console.log('✓ [Inventory] Ready')
+			logger.info({ port: PORT }, 'Inventory service ready')
+		})
 
-    // Start Express server
-    app.listen(PORT, () => {
-      logger.info(`✓ [Inventory] Service running on port ${PORT}`);
-    });
-  } catch (error) {
-    logger.error(`✗ [Inventory] Failed to start server: ${error.message}`);
-    process.exit(1);
-  }
+		// Connect to MongoDB
+		await connectDB()
+
+		// Connect to RabbitMQ broker
+		await messageBroker.connect()
+	} catch (error) {
+		logger.error({ error: error.message }, 'Failed to start server')
+		process.exit(1)
+	}
 }
 
 // Handle graceful shutdown
-process.on("SIGTERM", async () => {
-  logger.info("SIGTERM signal received: closing HTTP server");
-  await mongoose.connection.close();
-  process.exit(0);
-});
+process.on('SIGTERM', async () => {
+	logger.info('SIGTERM signal received: closing HTTP server')
+	await mongoose.connection.close()
+	await messageBroker.close()
+	process.exit(0)
+})
 
-process.on("SIGINT", async () => {
-  logger.info("SIGINT signal received: closing HTTP server");
-  await mongoose.connection.close();
-  process.exit(0);
-});
+process.on('SIGINT', async () => {
+	logger.info('SIGINT signal received: closing HTTP server')
+	await mongoose.connection.close()
+	await messageBroker.close()
+	process.exit(0)
+})
 
-startServer();
+startServer()
