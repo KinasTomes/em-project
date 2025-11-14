@@ -59,6 +59,9 @@ importers:
       '@ecommerce/message-broker':
         specifier: workspace:*
         version: link:../message-broker
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.0
       mongoose:
         specifier: ^8.9.4
         version: 8.19.3(socks@2.8.7)
@@ -141,6 +144,9 @@ importers:
       '@ecommerce/logger':
         specifier: workspace:*
         version: link:../../packages/logger
+      '@ecommerce/message-broker':
+        specifier: workspace:*
+        version: link:../../packages/message-broker
       '@ecommerce/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing
@@ -184,6 +190,12 @@ importers:
       '@ecommerce/logger':
         specifier: workspace:*
         version: link:../../packages/logger
+      '@ecommerce/message-broker':
+        specifier: workspace:*
+        version: link:../../packages/message-broker
+      '@ecommerce/outbox-pattern':
+        specifier: workspace:*
+        version: link:../../packages/outbox-pattern
       '@ecommerce/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing
@@ -203,8 +215,8 @@ importers:
         specifier: ^9.0.0
         version: 9.0.2
       mongoose:
-        specifier: ^7.0.1
-        version: 7.8.7
+        specifier: ^8.9.4
+        version: 8.19.3(socks@2.8.7)
       uuid:
         specifier: ^9.0.0
         version: 9.0.1

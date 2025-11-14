@@ -14,9 +14,146 @@ const app = require('./src/app')
 const config = require('./src/config')
 const mongoose = require('mongoose')
 const logger = require('@ecommerce/logger')
-const messageBroker = require('./src/utils/messageBroker')
+const inventoryService = require('./src/services/inventoryService')
 
 const PORT = config.port
+
+let broker = null
+
+/**
+ * Handle INVENTORY_RESERVE_REQUEST event
+ */
+async function handleReserveRequest(message, metadata = {}) {
+	const { orderId, productId, quantity } = message
+	const { eventId, correlationId } = metadata
+
+	logger.info(
+		{ orderId, productId, quantity, eventId, correlationId },
+		'📦 [Inventory] Handling RESERVE request'
+	)
+
+	try {
+		const result = await inventoryService.reserveStock(productId, quantity)
+
+		if (result.success) {
+			await broker.publish(
+				'orders',
+				{
+					type: 'INVENTORY_RESERVED',
+					data: {
+						orderId,
+						productId,
+						quantity,
+						timestamp: new Date().toISOString(),
+					},
+				},
+				{ correlationId: orderId }
+			)
+
+			logger.info(
+				{ orderId, productId, quantity },
+				'✓ [Inventory] RESERVED - published to orders queue'
+			)
+		} else {
+			await broker.publish(
+				'orders',
+				{
+					type: 'INVENTORY_RESERVE_FAILED',
+					data: {
+						orderId,
+						productId,
+						reason: result.message,
+						timestamp: new Date().toISOString(),
+					},
+				},
+				{ correlationId: orderId }
+			)
+
+			logger.warn(
+				{ orderId, productId, reason: result.message },
+				'✗ [Inventory] RESERVE_FAILED - insufficient stock'
+			)
+		}
+	} catch (error) {
+		logger.error(
+			{ error: error.message, orderId, productId },
+			'❌ [Inventory] Error processing RESERVE request'
+		)
+
+		await broker.publish(
+			'orders',
+			{
+				type: 'INVENTORY_RESERVE_FAILED',
+				data: {
+					orderId,
+					productId,
+					reason: error.message,
+					timestamp: new Date().toISOString(),
+				},
+			},
+			{ correlationId: orderId }
+		)
+	}
+}
+
+/**
+ * Handle INVENTORY_RELEASE_REQUEST event
+ */
+async function handleReleaseRequest(message, metadata = {}) {
+	const { orderId, productId, quantity } = message
+	const { eventId, correlationId } = metadata
+
+	logger.info(
+		{ orderId, productId, quantity, eventId, correlationId },
+		'🔓 [Inventory] Handling RELEASE request'
+	)
+
+	try {
+		await inventoryService.releaseReserved(productId, quantity)
+
+		await broker.publish(
+			'orders',
+			{
+				type: 'INVENTORY_RELEASED',
+				data: {
+					orderId,
+					productId,
+					quantity,
+					timestamp: new Date().toISOString(),
+				},
+			},
+			{ correlationId: orderId }
+		)
+
+		logger.info(
+			{ orderId, productId, quantity },
+			'✓ [Inventory] RELEASED - published to orders queue'
+		)
+	} catch (error) {
+		logger.error(
+			{ error: error.message, orderId, productId },
+			'❌ [Inventory] Error processing RELEASE request'
+		)
+	}
+}
+
+/**
+ * Handle inventory events from RabbitMQ
+ */
+async function handleInventoryEvent(message, metadata = {}) {
+	const { type } = message
+
+	switch (type) {
+		case 'INVENTORY_RESERVE_REQUEST':
+			await handleReserveRequest(message.data, metadata)
+			break
+		case 'INVENTORY_RELEASE_REQUEST':
+			await handleReleaseRequest(message.data, metadata)
+			break
+		default:
+			logger.warn({ type }, '⚠️ [Inventory] Unknown event type')
+	}
+}
 
 /**
  * Connect to MongoDB with retry logic
@@ -63,8 +200,14 @@ async function startServer() {
 		// Connect to MongoDB
 		await connectDB()
 
-		// Connect to RabbitMQ broker
-		await messageBroker.connect()
+		// Connect to RabbitMQ broker using @ecommerce/message-broker
+		const { Broker } = await import('@ecommerce/message-broker')
+		broker = new Broker()
+		logger.info('✓ [Inventory] Broker initialized')
+
+		// Setup consumer for inventory queue
+		await broker.consume('inventory', handleInventoryEvent)
+		logger.info('✓ [Inventory] Consumer ready on "inventory" queue')
 	} catch (error) {
 		logger.error({ error: error.message }, 'Failed to start server')
 		process.exit(1)
@@ -75,14 +218,18 @@ async function startServer() {
 process.on('SIGTERM', async () => {
 	logger.info('SIGTERM signal received: closing HTTP server')
 	await mongoose.connection.close()
-	await messageBroker.close()
+	if (broker) {
+		await broker.close()
+	}
 	process.exit(0)
 })
 
 process.on('SIGINT', async () => {
 	logger.info('SIGINT signal received: closing HTTP server')
 	await mongoose.connection.close()
-	await messageBroker.close()
+	if (broker) {
+		await broker.close()
+	}
 	process.exit(0)
 })
 

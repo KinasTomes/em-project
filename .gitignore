@@ -1,3 +1,17 @@
 .env
+.env.*
+!.env.example
 node_modules
 .DS_Store
+
+# Security - MongoDB keyfiles
+mongo-keyfile
+*-keyfile
+
+# Logs
+*.log
+logs/
+pnpm-debug.log*
+
+# Docker volumes
+mongo_*_data/

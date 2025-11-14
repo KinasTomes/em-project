@@ -2,20 +2,20 @@
 const mongoose = require('mongoose')
 const config = require('./config')
 const logger = require('@ecommerce/logger')
-const { Broker } = require('@ecommerce/message-broker')
 const Order = require('./models/order')
 const OrderService = require('./services/orderService')
 const OrderController = require('./controllers/orderController')
 const orderRoutes = require('./routes/orderRoutes')
 
-// Import Outbox Pattern dynamically because it is an ES module
+// Import ES modules dynamically
 let OutboxManager
+let Broker
 
 class App {
 	constructor() {
 		this.app = express()
-		this.broker = new Broker()
 		this.outboxManager = null
+		this.broker = null
 		this.server = null
 	}
 
@@ -284,6 +284,15 @@ class App {
 			logger.info(
 				'⏳ [Order] Setting up event consumer using @ecommerce/message-broker'
 			)
+
+			// Dynamically import Broker (ES module)
+			const { Broker: BrokerClass } = await import('@ecommerce/message-broker')
+			Broker = BrokerClass
+
+			// Initialize Broker (no connect() needed - lazy connection)
+			this.broker = new Broker()
+			logger.info('✓ [Order] Broker initialized')
+
 			await this.broker.consume('orders', this._handleOrderEvent.bind(this))
 			logger.info('✓ [Order] Event consumer ready')
 		} catch (error) {
@@ -293,7 +302,6 @@ class App {
 			)
 		}
 	}
-
 	async start() {
 		await this.connectDB()
 		this.setMiddlewares()
