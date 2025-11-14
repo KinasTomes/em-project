@@ -14,6 +14,7 @@ const app = require('./src/app')
 const config = require('./src/config')
 const mongoose = require('mongoose')
 const logger = require('@ecommerce/logger')
+const { v4: uuidv4 } = require('uuid')
 const inventoryService = require('./src/services/inventoryService')
 
 const PORT = config.port
@@ -26,6 +27,8 @@ let broker = null
 async function handleReserveRequest(message, metadata = {}) {
 	const { orderId, productId, quantity } = message
 	const { eventId, correlationId } = metadata
+	const baseEventId = eventId || uuidv4()
+	const correlatedId = correlationId || orderId
 
 	logger.info(
 		{ orderId, productId, quantity, eventId, correlationId },
@@ -47,7 +50,10 @@ async function handleReserveRequest(message, metadata = {}) {
 						timestamp: new Date().toISOString(),
 					},
 				},
-				{ correlationId: orderId }
+				{
+					eventId: `${baseEventId}:reserved`,
+					correlationId: correlatedId,
+				}
 			)
 
 			logger.info(
@@ -66,7 +72,10 @@ async function handleReserveRequest(message, metadata = {}) {
 						timestamp: new Date().toISOString(),
 					},
 				},
-				{ correlationId: orderId }
+				{
+					eventId: `${baseEventId}:reserve_failed`,
+					correlationId: correlatedId,
+				}
 			)
 
 			logger.warn(
@@ -91,7 +100,10 @@ async function handleReserveRequest(message, metadata = {}) {
 					timestamp: new Date().toISOString(),
 				},
 			},
-			{ correlationId: orderId }
+			{
+				eventId: `${baseEventId}:reserve_error`,
+				correlationId: correlatedId,
+			}
 		)
 	}
 }
@@ -102,6 +114,8 @@ async function handleReserveRequest(message, metadata = {}) {
 async function handleReleaseRequest(message, metadata = {}) {
 	const { orderId, productId, quantity } = message
 	const { eventId, correlationId } = metadata
+	const baseEventId = eventId || uuidv4()
+	const correlatedId = correlationId || orderId
 
 	logger.info(
 		{ orderId, productId, quantity, eventId, correlationId },
@@ -122,7 +136,10 @@ async function handleReleaseRequest(message, metadata = {}) {
 					timestamp: new Date().toISOString(),
 				},
 			},
-			{ correlationId: orderId }
+			{
+				eventId: `${baseEventId}:released`,
+				correlationId: correlatedId,
+			}
 		)
 
 		logger.info(
@@ -141,17 +158,26 @@ async function handleReleaseRequest(message, metadata = {}) {
  * Handle inventory events from RabbitMQ
  */
 async function handleInventoryEvent(message, metadata = {}) {
-	const { type } = message
+	const rawType = message?.type
+	const normalizedType = (() => {
+		if (rawType === 'INVENTORY_RESERVE_REQUEST' || rawType === 'RESERVE') {
+			return 'RESERVE'
+		}
+		if (rawType === 'INVENTORY_RELEASE_REQUEST' || rawType === 'RELEASE') {
+			return 'RELEASE'
+		}
+		return rawType
+	})()
 
-	switch (type) {
-		case 'INVENTORY_RESERVE_REQUEST':
-			await handleReserveRequest(message.data, metadata)
+	switch (normalizedType) {
+		case 'RESERVE':
+			await handleReserveRequest(message.data || message, metadata)
 			break
-		case 'INVENTORY_RELEASE_REQUEST':
-			await handleReleaseRequest(message.data, metadata)
+		case 'RELEASE':
+			await handleReleaseRequest(message.data || message, metadata)
 			break
 		default:
-			logger.warn({ type }, '⚠️ [Inventory] Unknown event type')
+			logger.warn({ type: rawType }, '⚠️ [Inventory] Unknown event type')
 	}
 }
 

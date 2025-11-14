@@ -97,6 +97,11 @@ export function setup() {
 	})
 
 	const productRes = http.post(PRODUCTS_URL, productPayload, { headers })
+
+	// Debug: log response
+	console.log(`[Setup] Product response status: ${productRes.status}`)
+	console.log(`[Setup] Product response body: ${productRes.body}`)
+
 	check(productRes, {
 		'[Setup] Product created (201)': (r) => r.status === 201,
 		'[Setup] Product id present': (r) => {
@@ -108,6 +113,12 @@ export function setup() {
 			}
 		},
 	})
+
+	if (productRes.status !== 201) {
+		fail(
+			`✗ [Setup] Failed to create product. Status: ${productRes.status}, Body: ${productRes.body}`
+		)
+	}
 
 	const productId = JSON.parse(productRes.body)._id
 	console.log(`✓ [Setup] Product ${productId} ready with available=10`)
