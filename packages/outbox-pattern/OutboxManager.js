@@ -1,11 +1,11 @@
 // packages/outbox-pattern/OutboxManager.js
 
-import mongoose from 'mongoose';
-import { v4 as uuid } from 'uuid';
-import { trace, context } from '@opentelemetry/api';
-import logger from '@ecommerce/logger';
-import { createOutboxModel, createOutboxEvent } from './models/OutboxModel.js';
-import { OutboxProcessor } from './processors/OutboxProcessor.js';
+const mongoose = require('mongoose');
+const { v4: uuid } = require('uuid');
+const { trace, context } = require('@opentelemetry/api');
+const logger = require('@ecommerce/logger');
+const { createOutboxModel, createOutboxEvent } = require('./models/OutboxModel.js');
+const { OutboxProcessor } = require('./processors/OutboxProcessor.js');
 
 /**
  * Outbox Manager - High-level wrapper for Outbox Pattern
@@ -41,7 +41,7 @@ import { OutboxProcessor } from './processors/OutboxProcessor.js';
  *   session.endSession();
  * }
  */
-export class OutboxManager {
+class OutboxManager {
   constructor(serviceName, connection = mongoose) {
     this.serviceName = serviceName;
     this.connection = connection;
@@ -206,4 +206,4 @@ export class OutboxManager {
   }
 }
 
-export default OutboxManager;
+module.exports = { OutboxManager };

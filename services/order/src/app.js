@@ -30,7 +30,7 @@ class App {
 
   async initOutbox() {
     try {
-      const { OutboxManager: OM } = await import("@ecommerce/outbox-pattern");
+      const { OutboxManager: OM } = require("@ecommerce/outbox-pattern");
       OutboxManager = OM;
       
       this.outboxManager = new OutboxManager("order", mongoose.connection);

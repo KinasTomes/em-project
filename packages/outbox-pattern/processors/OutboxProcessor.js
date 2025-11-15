@@ -1,8 +1,8 @@
 // packages/outbox-pattern/processors/OutboxProcessor.js
 
-import logger from '@ecommerce/logger';
-import { Broker } from '@ecommerce/message-broker';
-import { createOutboxModel } from '../models/OutboxModel.js';
+const logger = require('@ecommerce/logger');
+const { Broker } = require('@ecommerce/message-broker');
+const { createOutboxModel } = require('../models/OutboxModel.js');
 
 /**
  * Outbox Processor - Watches outbox collection and publishes events to RabbitMQ
@@ -17,7 +17,7 @@ import { createOutboxModel } from '../models/OutboxModel.js';
  * - Graceful shutdown
  * - Per-service isolation
  */
-export class OutboxProcessor {
+class OutboxProcessor {
   constructor(serviceName, connection) {
     this.serviceName = serviceName;
     this.connection = connection;
@@ -391,10 +391,14 @@ export class OutboxProcessor {
  * // Later, to stop:
  * await processor.stop();
  */
-export async function startOutboxProcessor(serviceName, connection) {
+async function startOutboxProcessor(serviceName, connection) {
   const processor = new OutboxProcessor(serviceName, connection);
   await processor.start();
   return processor;
 }
 
-export default OutboxProcessor;
+module.exports = {
+  OutboxProcessor,
+  startOutboxProcessor,
+  OutboxProcessorClass: OutboxProcessor
+};

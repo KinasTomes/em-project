@@ -1,12 +1,12 @@
 // packages/message-broker/index.js
-import { trace, propagation, context, SpanStatusCode } from '@opentelemetry/api';
-import amqp from 'amqplib';
-import { createClient } from 'redis';
-import logger from '@ecommerce/logger';
+const { trace, propagation, context, SpanStatusCode } = require('@opentelemetry/api');
+const amqp = require('amqplib');
+const { createClient } = require('redis');
+const logger = require('@ecommerce/logger');
 
 const tracer = trace.getTracer('ecommerce-broker');
 
-export class Broker {
+class Broker {
   constructor() {
     this.connection = null;
     this.channel = null;
@@ -392,3 +392,5 @@ export class Broker {
     }
   }
 }
+
+module.exports = { Broker };

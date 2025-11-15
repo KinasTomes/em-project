@@ -1,6 +1,6 @@
 // packages/outbox-pattern/models/OutboxModel.js
 
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 /**
  * Shared Outbox Schema
@@ -109,7 +109,7 @@ outboxSchema.index({ correlationId: 1, createdAt: -1 });
  *   correlationId: uuid()
  * });
  */
-export function createOutboxModel(serviceName, connection = mongoose) {
+function createOutboxModel(serviceName, connection = mongoose) {
   const modelName = `${serviceName}_outbox`;
   const collectionName = `${serviceName}_outbox`;
 
@@ -154,7 +154,7 @@ export function createOutboxModel(serviceName, connection = mongoose) {
  *   session.endSession();
  * }
  */
-export async function createOutboxEvent(
+async function createOutboxEvent(
   OutboxModel,
   eventType,
   payload,
@@ -175,4 +175,8 @@ export async function createOutboxEvent(
   return outboxEvent[0];
 }
 
-export default outboxSchema;
+module.exports = {
+  outboxSchema,
+  createOutboxModel,
+  createOutboxEvent
+};
