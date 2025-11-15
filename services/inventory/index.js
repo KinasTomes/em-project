@@ -59,10 +59,9 @@ async function startServer() {
     // Connect to MongoDB
     await connectDB();
 
-    // Event-driven broker disabled in synchronous mode
-    // If needed in future, re-enable:
-    // const messageBroker = require("./src/utils/messageBroker");
-    // await messageBroker.connect();
+    // Enable event-driven processing: consume RabbitMQ inventory events
+    const messageBroker = require("./src/utils/messageBroker");
+    await messageBroker.connect();
   } catch (error) {
     logger.error({ error: error.message }, "Failed to start server");
     process.exit(1);

@@ -22,10 +22,26 @@ class MessageBroker {
         this.connection = await amqp.connect(config.rabbitMQURI);
         this.channel = await this.connection.createChannel();
 
-        // Assert only 3 main queues
-        await this.channel.assertQueue("products", { durable: true });
-        await this.channel.assertQueue("orders", { durable: true });
-        await this.channel.assertQueue("inventory", { durable: true });
+        // Declare queues aligned with central broker (DLX settings)
+        // Orders queue (responses go here)
+        await this.channel.assertQueue("orders", {
+          durable: true,
+          arguments: {
+            'x-dead-letter-exchange': '',
+            'x-dead-letter-routing-key': `orders.dlq`
+          }
+        });
+        await this.channel.assertQueue(`orders.dlq`, { durable: true });
+
+        // RESERVE requests from Order service (eventType as queue name)
+        await this.channel.assertQueue("RESERVE", {
+          durable: true,
+          arguments: {
+            'x-dead-letter-exchange': '',
+            'x-dead-letter-routing-key': `RESERVE.dlq`
+          }
+        });
+        await this.channel.assertQueue(`RESERVE.dlq`, { durable: true });
 
         logger.info("✓ [Inventory] RabbitMQ connected");
 
@@ -65,11 +81,10 @@ class MessageBroker {
    * Start consuming messages from queues
    */
   startConsuming() {
-    // Listen for product events (PRODUCT_CREATED, PRODUCT_DELETED)
-    this.consumeMessage("products", this.handleProductEvents.bind(this));
-
-    // Listen for inventory operations (RESERVE, RELEASE, RESTOCK)
-    this.consumeMessage("inventory", this.handleInventoryEvents.bind(this));
+    // Consume RESERVE requests published with eventType as queue name
+    this.consumeMessage("RESERVE", async (payload) => {
+      await this.handleReserveRequest(payload);
+    });
   }
 
   /**
@@ -278,10 +293,29 @@ class MessageBroker {
     }
 
     try {
-      await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
-        persistent: true,
+      await this.channel.assertQueue(queue, {
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': '',
+          'x-dead-letter-routing-key': `${queue}.dlq`
+        }
       });
+      await this.channel.assertQueue(`${queue}.dlq`, { durable: true });
+      const correlationId = message?.data?.orderId || message?.orderId || undefined;
+      const messageId = correlationId || String(Date.now());
+      this.channel.sendToQueue(
+        queue,
+        Buffer.from(JSON.stringify(message)),
+        {
+          persistent: true,
+          messageId,
+          correlationId,
+          timestamp: Date.now(),
+          headers: {
+            'x-correlation-id': correlationId,
+          },
+        }
+      );
       logger.info(`[Inventory] Published message to queue: ${queue}`);
     } catch (err) {
       logger.error(`[Inventory] Error publishing message: ${err.message}`);
