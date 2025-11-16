@@ -42,6 +42,9 @@ class OutboxProcessor {
     try {
       logger.info({ serviceName: this.serviceName }, '⏳ Starting Outbox Processor...');
 
+      // Process any pending events from before restart (startup recovery)
+      await this._processPendingEvents();
+
       await this._startChangeStream();
 
       this.isRunning = true;
@@ -53,6 +56,59 @@ class OutboxProcessor {
         serviceName: this.serviceName
       }, '❌ Failed to start Outbox Processor');
       throw error;
+    }
+  }
+
+  /**
+   * Process pending events on startup (recovery scan)
+   * @private
+   */
+  async _processPendingEvents() {
+    try {
+      const pendingEvents = await this.OutboxModel.find({ 
+        status: 'PENDING',
+        $or: [
+          { nextRetry: null },
+          { nextRetry: { $lte: new Date() } }
+        ]
+      })
+      .sort({ createdAt: 1 })
+      .limit(100)
+      .lean();
+
+      if (pendingEvents.length === 0) {
+        logger.info({ serviceName: this.serviceName }, '✓ No pending events to recover');
+        return;
+      }
+
+      logger.info({ 
+        count: pendingEvents.length, 
+        serviceName: this.serviceName 
+      }, '🔄 Processing pending events from before restart...');
+
+      for (const event of pendingEvents) {
+        try {
+          await this.processEvent(event);
+        } catch (error) {
+          logger.error({
+            error: error.message,
+            eventId: event.eventId,
+            serviceName: this.serviceName
+          }, '❌ Failed to process pending event during recovery');
+        }
+      }
+
+      logger.info({ 
+        processed: pendingEvents.length,
+        serviceName: this.serviceName 
+      }, '✓ Startup recovery completed');
+
+    } catch (error) {
+      logger.error({
+        error: error.message,
+        serviceName: this.serviceName
+      }, '❌ Error during startup recovery scan');
+      // Don't throw - let the processor start even if recovery fails
     }
   }
 

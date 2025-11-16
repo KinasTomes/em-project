@@ -12,6 +12,7 @@ class Broker {
     this.channel = null;
     this.redisClient = null;
     this.isConnected = false;
+    this.consumers = []; // Track registered consumers for re-registration
     
     logger.info('Broker initialized (connections will be established on first use)');
   }
@@ -41,9 +42,23 @@ class Broker {
           this.isConnected = false;
         });
 
-        this.connection.on('close', () => {
-          logger.warn('⚠️  RabbitMQ connection closed');
+        this.connection.on('close', async () => {
+          logger.warn('⚠️  RabbitMQ connection closed. Auto-reconnecting...');
           this.isConnected = false;
+          this.connection = null;
+          this.channel = null;
+          
+          // Wait before reconnecting
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          try {
+            await this._ensureRabbitMQConnection();
+            // Re-register all consumers after reconnection
+            await this._reregisterConsumers();
+            logger.info('✓ RabbitMQ reconnected and consumers restored');
+          } catch (error) {
+            logger.error({ error: error.message }, '❌ Failed to auto-reconnect RabbitMQ');
+          }
         });
 
         this.isConnected = true;
@@ -198,6 +213,25 @@ class Broker {
   }
 
   /**
+   * Re-register all consumers after reconnection
+   * @private
+   */
+  async _reregisterConsumers() {
+    if (this.consumers.length === 0) return;
+    
+    logger.info({ count: this.consumers.length }, '🔄 Re-registering consumers...');
+    
+    for (const { queue, handler, schema } of this.consumers) {
+      try {
+        await this._setupConsumer(queue, handler, schema);
+        logger.info({ queue }, '✓ Consumer re-registered');
+      } catch (error) {
+        logger.error({ queue, error: error.message }, '❌ Failed to re-register consumer');
+      }
+    }
+  }
+
+  /**
    * Consume message với 4-layer processing:
    * 1. Tracing (Extract context)
    * 2. Idempotency (Redis check)
@@ -207,6 +241,27 @@ class Broker {
   async consume(queue, handler, schema) {
     await this._ensureRabbitMQConnection();
     await this._ensureRedisConnection();
+    
+    // Store consumer info for re-registration after reconnect
+    const existingIndex = this.consumers.findIndex(c => c.queue === queue);
+    if (existingIndex >= 0) {
+      this.consumers[existingIndex] = { queue, handler, schema };
+    } else {
+      this.consumers.push({ queue, handler, schema });
+    }
+    
+    await this._setupConsumer(queue, handler, schema);
+  }
+
+  /**
+   * Setup consumer (internal, separated for re-registration)
+   * @private
+   */
+  async _setupConsumer(queue, handler, schema) {
+
+    if (!this.channel) {
+      throw new Error('Channel not available');
+    }
 
     // Assert queue exists
     await this.channel.assertQueue(queue, { 

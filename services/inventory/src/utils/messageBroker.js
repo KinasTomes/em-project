@@ -53,11 +53,21 @@ class MessageBroker {
           logger.error(`[Inventory] RabbitMQ connection error: ${err.message}`);
         });
 
-        this.connection.on("close", () => {
+        this.connection.on("close", async () => {
           logger.warn(
-            "[Inventory] RabbitMQ connection closed. Reconnecting..."
+            "[Inventory] RabbitMQ connection closed. Auto-reconnecting..."
           );
-          setTimeout(() => this.connectWithRetry(), 5000);
+          this.connection = null;
+          this.channel = null;
+          
+          await new Promise(res => setTimeout(res, 5000));
+          
+          try {
+            await this.connectWithRetry();
+            logger.info("✓ [Inventory] RabbitMQ reconnected and consumer restored");
+          } catch (error) {
+            logger.error(`❌ [Inventory] Failed to reconnect: ${error.message}`);
+          }
         });
 
         return;
