@@ -75,6 +75,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - mongo_product
+      - inventory
       - rabbitmq
       - redis
       - jaeger
@@ -132,6 +133,45 @@ services:
   #----------------------------------------------------------------
   # 6. INFRASTRUCTURE
   #----------------------------------------------------------------
+  inventory:
+    build:
+      context: .
+      dockerfile: ./services/inventory/Dockerfile
+    ports:
+      - "${INVENTORY_PORT:-3005}:3005"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${INVENTORY_PORT:-3005}
+      - MONGODB_INVENTORY_URI=${MONGODB_INVENTORY_URI}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - mongo_inventory
+      - rabbitmq
+      - redis
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 6. INFRASTRUCTURE
+  #----------------------------------------------------------------
+  # Redis for Idempotency and Caching
+  redis:
+    image: redis:7-alpine
+    container_name: 'redis'
+    ports:
+      - "6379:6379"
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   # RabbitMQ for Message Brokering
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -204,9 +244,12 @@ services:
     volumes:
       - mongo_product_data:/data/db
 
-  # MongoDB for Order Service
+  # MongoDB for Order Service (Replica Set for Change Streams)
   mongo_order:
-    image: mongo:latest
+    build:
+      context: .
+      dockerfile: ./docker/mongo-order/Dockerfile
+    image: em-project-mongo-order
     container_name: 'mongo_order'
     ports:
       - "27019:27017"
@@ -217,6 +260,38 @@ services:
       - ecommerce-network
     volumes:
       - mongo_order_data:/data/db
+    healthcheck:
+      test: |
+        mongosh --eval "
+          try {
+            rs.status();
+            quit(0);
+          } catch (e) {
+            rs.initiate({
+              _id: 'rs0',
+              members: [{ _id: 0, host: 'mongo_order:27017' }]
+            });
+            quit(0);
+          }
+        " --username root --password example --authenticationDatabase admin
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # MongoDB for Inventory Service
+  mongo_inventory:
+    image: mongo:latest
+    container_name: 'mongo_inventory'
+    ports:
+      - "27020:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_inventory_data:/data/db
 
   # MongoDB for Inventory Service
   mongo_inventory:

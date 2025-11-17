@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "Transactional Outbox Pattern implementation for microservices",
   "main": "index.js",
+  "exports": {
+    "import": "./index.js",
+    "require": "./index.cjs"
+  },
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -21,7 +26,7 @@
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
-    "mongoose": "^7.0.1",
+    "mongoose": "^8.9.4",
     "uuid": "^11.0.5"
   }
 }

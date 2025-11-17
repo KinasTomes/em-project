@@ -1,105 +1,89 @@
-const logger = require("@ecommerce/logger");
+const logger = require('@ecommerce/logger')
 
 class OrderController {
-  constructor(orderService) {
-    this.orderService = orderService;
-    this.createOrder = this.createOrder.bind(this);
-    this.getOrderById = this.getOrderById.bind(this);
-  }
+	constructor(orderService) {
+		this.orderService = orderService
+		this.createOrder = this.createOrder.bind(this)
+		this.getOrderById = this.getOrderById.bind(this)
+	}
 
-  /**
-   * POST /api/orders
-   * Create a new order
-   */
-  async createOrder(req, res) {
-    try {
-      const token = req.headers.authorization;
-      if (!token) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
+	/**
+	 * POST /api/orders
+	 * Create a new order
+	 */
+	async createOrder(req, res) {
+		try {
+			const token = req.headers.authorization
+			if (!token) {
+				return res.status(401).json({ message: 'Unauthorized' })
+			}
 
-      const { productIds, quantities } = req.body;
+			const { ids, quantities } = req.body
 
-      // Validate input
-      if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
-        return res.status(400).json({ message: "Product IDs are required" });
-      }
+			// Validate input
+			if (!ids || !Array.isArray(ids) || ids.length === 0) {
+				return res.status(400).json({ message: 'Product IDs are required' })
+			}
 
-      if (!quantities || !Array.isArray(quantities) || quantities.length === 0) {
-        return res.status(400).json({ message: "Quantities are required" });
-      }
+			const username = req.user.username
 
-      if (productIds.length !== quantities.length) {
-        return res.status(400).json({ 
-          message: "Product IDs and quantities length must match" 
-        });
-      }
+			// Create order via service
+			const result = await this.orderService.createOrder(
+				ids,
+				quantities,
+				username,
+				token
+			)
 
-      if (quantities.some(q => !Number.isInteger(q) || q <= 0)) {
-        return res.status(400).json({ 
-          message: "All quantities must be positive integers" 
-        });
-      }
+			return res.status(201).json(result)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, body: req.body },
+				'Failed to create order'
+			)
 
-      const username = req.user.username;
+			if (error.message.includes('not found')) {
+				return res.status(404).json({ message: error.message })
+			}
 
-      // Create order via service
-      const result = await this.orderService.createOrder(
-        productIds, 
-        quantities, 
-        username, 
-        token
-      );
+			if (error.code === 'ECONNREFUSED' || error.message.includes('timeout')) {
+				return res.status(503).json({ message: 'Product Service unavailable' })
+			}
 
-      return res.status(201).json(result);
-    } catch (error) {
-      logger.error(
-        { error: error.message, body: req.body },
-        "Failed to create order"
-      );
+			return res.status(500).json({ message: 'Server error' })
+		}
+	}
 
-      if (error.message.includes("not found")) {
-        return res.status(404).json({ message: error.message });
-      }
+	/**
+	 * GET /api/orders/:id
+	 * Return order details including status
+	 */
+	async getOrderById(req, res) {
+		try {
+			const token = req.headers.authorization
+			if (!token) {
+				return res.status(401).json({ message: 'Unauthorized' })
+			}
 
-      if (error.code === "ECONNREFUSED" || error.message.includes("timeout")) {
-        return res.status(503).json({ message: "Product Service unavailable" });
-      }
+			const { id } = req.params
+			if (!id) return res.status(400).json({ message: 'Order id required' })
 
-      return res.status(500).json({ message: "Server error" });
-    }
-  }
+			const order = await this.orderService.getOrderById(id)
+			if (!order) return res.status(404).json({ message: 'Order not found' })
 
-  /**
-   * GET /api/orders/:id
-   * Return order details including status
-   */
-  async getOrderById(req, res) {
-    try {
-      const token = req.headers.authorization;
-      if (!token) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const { id } = req.params;
-      if (!id) return res.status(400).json({ message: "Order id required" });
-
-      const order = await this.orderService.getOrderById(id);
-      if (!order) return res.status(404).json({ message: "Order not found" });
-
-      return res.status(200).json({
-        orderId: order._id,
-        products: order.products,
-        totalPrice: order.totalPrice,
-        user: order.user,
-        status: order.status,
-        createdAt: order.createdAt,
-      });
-    } catch (error) {
-      logger.error({ error: error.message }, "Failed to fetch order");
-      return res.status(500).json({ message: "Server error" });
-    }
-  }
+			return res.status(200).json({
+				orderId: order._id,
+				products: order.products,
+				totalPrice: order.totalPrice,
+				user: order.user,
+				status: order.status,
+				createdAt: order.createdAt,
+			})
+		} catch (error) {
+			logger.error({ error: error.message }, 'Failed to fetch order')
+			return res.status(500).json({ message: 'Server error' })
+		}
+	}
 }
 
-module.exports = OrderController;
+module.exports = OrderController

@@ -15,6 +15,7 @@ COPY package.json .
 COPY packages/config/package.json ./packages/config/
 COPY packages/logger/package.json ./packages/logger/
 COPY packages/message-broker/package.json ./packages/message-broker/
+COPY packages/outbox-pattern/package.json ./packages/outbox-pattern/
 COPY packages/tracing/package.json ./packages/tracing/
 COPY services/inventory/package.json ./services/inventory/
 
@@ -29,6 +30,7 @@ RUN pnpm install --frozen-lockfile
 COPY packages/config ./packages/config
 COPY packages/logger ./packages/logger
 COPY packages/message-broker ./packages/message-broker
+COPY packages/outbox-pattern ./packages/outbox-pattern
 COPY packages/tracing ./packages/tracing
 
 # Stage 2: Build the final service image
