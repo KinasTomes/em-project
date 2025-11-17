@@ -2,3 +2,5 @@
 node_modules
 .DS_Store
 docs
+CLAUDE.md
+error_log.txt
