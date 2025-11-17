@@ -327,10 +327,11 @@ export class Broker {
         // LAYER 2: Schema Validation (Zod)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         const rawData = JSON.parse(msg.content.toString());
+        let validatedData = rawData;
 
         if (schema) {
           try {
-            schema.parse(rawData);
+            validatedData = schema.parse(rawData);
             span.setAttribute('schema.valid', true);
           } catch (validationError) {
             logger.error({
@@ -353,7 +354,7 @@ export class Broker {
         // LAYER 3: Execute Handler (Business Logic)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         await context.with(activeContext, async () => {
-          await handler(rawData, {
+          await handler(validatedData, {
             eventId,
             correlationId,
             timestamp: msg.properties.timestamp,
