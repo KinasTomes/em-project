@@ -133,7 +133,26 @@ services:
       - ecommerce-network
 
   #----------------------------------------------------------------
-  # 6. INFRASTRUCTURE
+  # 6. Payment Service
+  #----------------------------------------------------------------
+  payment:
+    build:
+      context: .
+      dockerfile: ./services/payment/Dockerfile
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+    depends_on:
+      - rabbitmq
+      - redis
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 7. INFRASTRUCTURE
   #----------------------------------------------------------------
   # # Redis for Idempotency and Caching
   # redis:
