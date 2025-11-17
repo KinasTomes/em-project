@@ -66,8 +66,6 @@ app.use("/inventory", (req, res) => {
     { path: req.path, method: req.method },
     "Routing to inventory service"
   );
-  const inventoryServiceUrl =
-    process.env.INVENTORY_SERVICE_URL || "http://inventory:3005";
   let suffix = "";
   if (req.url === "/") {
     suffix = "";
@@ -77,7 +75,7 @@ app.use("/inventory", (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/inventory${suffix}`;
-  proxy.web(req, res, { target: inventoryServiceUrl });
+  proxy.web(req, res, { target: config.inventoryServiceUrl });
 });
 
 // Start the server
@@ -90,6 +88,7 @@ app.listen(config.port, () => {
         auth: config.authServiceUrl,
         product: config.productServiceUrl,
         order: config.orderServiceUrl,
+        inventory: config.inventoryServiceUrl,
       },
     },
     "API Gateway started successfully"

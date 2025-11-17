@@ -1,17 +1,17 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const config = require("./config");
-const MessageBroker = require("./utils/messageBroker");
+const { Broker } = require("@ecommerce/message-broker");
 const productsRouter = require("./routes/productRoutes");
 const logger = require("@ecommerce/logger");
 
 class App {
   constructor() {
     this.app = express();
+    this.broker = new Broker();
     this.connectDB();
     this.setMiddlewares();
     this.setRoutes();
-    this.setupMessageBroker();
   }
 
   async connectDB() {
@@ -34,11 +34,12 @@ class App {
   }
 
   setRoutes() {
+    // Inject broker into req so controllers can access it
+    this.app.use((req, res, next) => {
+      req.broker = this.broker;
+      next();
+    });
     this.app.use("/api/products", productsRouter);
-  }
-
-  setupMessageBroker() {
-    MessageBroker.connect();
   }
 
   start() {
@@ -50,6 +51,7 @@ class App {
   }
 
   async stop() {
+    await this.broker.close();
     await mongoose.disconnect();
     this.server.close();
     console.log("Server stopped");

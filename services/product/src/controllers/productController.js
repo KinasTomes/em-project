@@ -1,10 +1,11 @@
 const Product = require("../models/product");
-// const messageBroker = require("../utils/messageBroker");
 const fetch =
   // dynamic import to support CJS
   (...args) =>
     import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const config = require("../config");
+const { v4: uuidv4 } = require("uuid");
+const logger = require("@ecommerce/logger");
 
 /**
  * Class to hold the API implementation for the product services
@@ -74,6 +75,26 @@ class ProductController {
         });
 
         const invPayloadText = await invRes.text();
+
+        // Publish async event to message broker
+        if (req.broker) {
+          try {
+            const eventId = uuidv4();
+            const correlationId = req.headers['x-correlation-id'] || uuidv4();
+            await req.broker.publish('products', {
+              type: 'PRODUCT_CREATED',
+              data: {
+                productId: product._id.toString(),
+                available,
+                initialStock: available,
+              },
+              timestamp: new Date().toISOString(),
+            }, { eventId, correlationId });
+            logger.info({ eventId, productId: product._id }, 'PRODUCT_CREATED event published');
+          } catch (brokerError) {
+            logger.error({ error: brokerError.message }, 'Failed to publish PRODUCT_CREATED event (non-fatal)');
+          }
+        }
 
         if (!invRes.ok) {
           console.error(
@@ -231,6 +252,24 @@ class ProductController {
           `[Product Controller] Inventory delete failed (non-fatal): ${err.message}`
         );
         // choose not to rollback product deletion here; log for ops
+      }
+
+      // Publish async event to message broker
+      if (req.broker) {
+        try {
+          const eventId = uuidv4();
+          const correlationId = req.headers['x-correlation-id'] || uuidv4();
+          await req.broker.publish('products', {
+            type: 'PRODUCT_DELETED',
+            data: {
+              productId: id,
+            },
+            timestamp: new Date().toISOString(),
+          }, { eventId, correlationId });
+          logger.info({ eventId, productId: id }, 'PRODUCT_DELETED event published');
+        } catch (brokerError) {
+          logger.error({ error: brokerError.message }, 'Failed to publish PRODUCT_DELETED event (non-fatal)');
+        }
       }
 
       res.status(204).send();

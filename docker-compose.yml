@@ -23,6 +23,7 @@ services:
       - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth:3001}
       - PRODUCT_SERVICE_URL=${PRODUCT_SERVICE_URL:-http://product:3004}
       - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order:3002}
+      - INVENTORY_SERVICE_URL=${INVENTORY_SERVICE_URL:-http://inventory:3005}
       - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
@@ -68,12 +69,14 @@ services:
       - PORT=${PRODUCT_PORT:-3004}
       - MONGODB_PRODUCT_URI=${MONGODB_PRODUCT_URI}
       - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - INVENTORY_URL=${INVENTORY_URL:-http://inventory:3005}
       - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - mongo_product
       - rabbitmq
+      - redis
       - jaeger
     networks:
       - ecommerce-network
