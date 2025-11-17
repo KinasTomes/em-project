@@ -15,6 +15,5 @@ pnpm-debug.log*
 
 # Docker volumes
 mongo_*_data/
-docs
 CLAUDE.md
 error_log.txt
