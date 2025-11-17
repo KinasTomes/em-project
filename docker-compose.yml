@@ -133,7 +133,34 @@ services:
       - ecommerce-network
 
   #----------------------------------------------------------------
-  # 6. INFRASTRUCTURE
+  # 6. Payment Service
+  #----------------------------------------------------------------
+  payment:
+    build:
+      context: .
+      dockerfile: ./services/payment/Dockerfile
+    ports:
+      - "${PAYMENT_PORT:-3006}:3006"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PAYMENT_PORT:-3006}
+      - PAYMENT_PORT=${PAYMENT_PORT:-3006}
+      - PAYMENT_SUCCESS_RATE=${PAYMENT_SUCCESS_RATE:-0.9}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - STOCK_RESERVED_QUEUE=${STOCK_RESERVED_QUEUE:-STOCK_RESERVED}
+      - ORDER_EVENTS_QUEUE=${ORDER_EVENTS_QUEUE:-orders}
+      - INVENTORY_EVENTS_QUEUE=${INVENTORY_EVENTS_QUEUE:-inventory}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+    depends_on:
+      - rabbitmq
+      - redis
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 7. INFRASTRUCTURE
   #----------------------------------------------------------------
   # # Redis for Idempotency and Caching
   # redis:

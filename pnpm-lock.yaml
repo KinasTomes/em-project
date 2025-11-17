@@ -221,6 +221,34 @@ importers:
         specifier: ^9.0.0
         version: 9.0.1
 
+  services/payment:
+    dependencies:
+      '@ecommerce/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@ecommerce/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
+      '@ecommerce/message-broker':
+        specifier: workspace:*
+        version: link:../../packages/message-broker
+      '@ecommerce/tracing':
+        specifier: workspace:*
+        version: link:../../packages/tracing
+      express:
+        specifier: ^4.18.2
+        version: 4.21.2
+      uuid:
+        specifier: ^9.0.0
+        version: 9.0.1
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      nodemon:
+        specifier: ^2.0.22
+        version: 2.0.22
+
   services/product:
     dependencies:
       '@ecommerce/config':
@@ -2021,6 +2049,9 @@ packages:
   yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
+
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
   zod@4.1.12:
     resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
@@ -4031,5 +4062,7 @@ snapshots:
       yargs-parser: 21.1.1
 
   yocto-queue@0.1.0: {}
+
+  zod@3.25.76: {}
 
   zod@4.1.12: {}
