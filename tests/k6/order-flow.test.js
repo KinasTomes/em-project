@@ -39,8 +39,8 @@ const orderSuccessRate = new Rate('order_success_rate');
 export const options = {
   // Light load test
   stages: [
-    { duration: '10s', target: 5 },   // Ramp up to 5 VUs
-    { duration: '30s', target: 5 },   // Stay at 5 VUs
+    { duration: '10s', target: 10 },   // Ramp up to 5 VUs
+    { duration: '30s', target: 10 },   // Stay at 5 VUs
     { duration: '10s', target: 0 },   // Ramp down
   ],
   thresholds: {
@@ -219,7 +219,7 @@ export default function () {
   // STEP 4: Create Order
   // ===================================================================
   const orderData = {
-    productIds: [productId],
+    ids: [productId],
     quantities: [2],
   };
   

@@ -1,12 +1,12 @@
 // packages/message-broker/index.js
-const { trace, propagation, context, SpanStatusCode } = require('@opentelemetry/api');
-const amqp = require('amqplib');
-const { createClient } = require('redis');
-const logger = require('@ecommerce/logger');
+import { trace, propagation, context, SpanStatusCode } from '@opentelemetry/api'
+import amqp from 'amqplib'
+import { createClient } from 'redis'
+import logger from '@ecommerce/logger'
 
 const tracer = trace.getTracer('ecommerce-broker');
 
-class Broker {
+export class Broker {
   constructor() {
     this.connection = null;
     this.channel = null;
@@ -90,7 +90,7 @@ class Broker {
       return;
     }
 
-    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+    const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
     try {
       logger.info({ redisUrl }, '⏳ Connecting to Redis...');
@@ -448,4 +448,4 @@ class Broker {
   }
 }
 
-module.exports = { Broker };
+export default Broker

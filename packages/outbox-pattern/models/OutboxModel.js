@@ -8,7 +8,7 @@ import mongoose from 'mongoose'
  * Used by all services to store events before publishing to RabbitMQ.
  * Ensures at-least-once delivery guarantee via MongoDB transactions.
  */
-const outboxSchema = new mongoose.Schema(
+export const outboxSchema = new mongoose.Schema(
 	{
 		// Event metadata
 		eventType: {
