@@ -53,18 +53,28 @@
  */
 
 // Export models
-export {
+const {
   createOutboxModel,
   createOutboxEvent,
-  default as outboxSchema
-} from './models/OutboxModel.js';
+  outboxSchema
+} = require('./models/OutboxModel.js');
 
 // Export processors
-export {
+const {
   OutboxProcessor,
   startOutboxProcessor,
-  default as OutboxProcessorClass
-} from './processors/OutboxProcessor.js';
+  OutboxProcessorClass
+} = require('./processors/OutboxProcessor.js');
 
 // Export convenience wrapper
-export { OutboxManager } from './OutboxManager.js';
+const { OutboxManager } = require('./OutboxManager.js');
+
+module.exports = {
+  createOutboxModel,
+  createOutboxEvent,
+  outboxSchema,
+  OutboxProcessor,
+  startOutboxProcessor,
+  OutboxProcessorClass,
+  OutboxManager
+};

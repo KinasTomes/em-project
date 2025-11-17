@@ -233,7 +233,7 @@ File `.env` ở gốc sẽ được tự động sử dụng bởi tất cả c�
 
 Phương pháp này sẽ khởi chạy toàn bộ hệ thống, bao gồm tất cả các microservices, databases, RabbitMQ và Jaeger để tracing.
 
-```bash
+```bash   
 # Build và chạy toàn bộ hệ thống ở chế độ nền
 docker compose up --build -d
 
@@ -423,6 +423,13 @@ Content-Type: application/json
 - **KinasTomes** - [GitHub](https://github.com/KinasTomes)
 
 ---
+
+## Testing
+- Flow: Register → Login → POST /orders → Order PENDING → Outbox created → RabbitMQ publish → Inventory process → Order CONFIRMED
+node tests/e2e-order-flow.js
+
+- Flow: Register → Login → POST /orders → Order PENDING → Outbox created → RabbitMQ publish → Inventory process → Order CANCELLED
+node tests/e2e-order-cancelled.js
 
 **📌 Quick Links:**
 - [Project Plan](./PLAN.md) - Kế hoạch chi tiết 4 tuần

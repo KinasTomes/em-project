@@ -229,12 +229,12 @@ importers:
       '@ecommerce/logger':
         specifier: workspace:*
         version: link:../../packages/logger
+      '@ecommerce/message-broker':
+        specifier: workspace:*
+        version: link:../../packages/message-broker
       '@ecommerce/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing
-      amqplib:
-        specifier: ^0.10.3
-        version: 0.10.9
       chai:
         specifier: ^4.3.7
         version: 4.5.0

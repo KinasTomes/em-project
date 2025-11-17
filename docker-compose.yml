@@ -23,6 +23,7 @@ services:
       - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth:3001}
       - PRODUCT_SERVICE_URL=${PRODUCT_SERVICE_URL:-http://product:3004}
       - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order:3002}
+      - INVENTORY_SERVICE_URL=${INVENTORY_SERVICE_URL:-http://inventory:3005}
       - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
@@ -68,6 +69,7 @@ services:
       - PORT=${PRODUCT_PORT:-3004}
       - MONGODB_PRODUCT_URI=${MONGODB_PRODUCT_URI}
       - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - INVENTORY_URL=${INVENTORY_URL:-http://inventory:3005}
       - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
       - JWT_SECRET=${JWT_SECRET}
@@ -75,6 +77,7 @@ services:
       - mongo_product
       - inventory
       - rabbitmq
+      - redis
       - jaeger
     networks:
       - ecommerce-network
@@ -106,6 +109,29 @@ services:
 
   #----------------------------------------------------------------
   # 5. Inventory Service
+  #----------------------------------------------------------------
+  inventory:
+    build:
+      context: .
+      dockerfile: ./services/inventory/Dockerfile
+    ports:
+      - "${INVENTORY_PORT:-3005}:3005"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${INVENTORY_PORT:-3005}
+      - MONGODB_INVENTORY_URI=${MONGODB_INVENTORY_URI}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - mongo_inventory
+      - rabbitmq
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 6. INFRASTRUCTURE
   #----------------------------------------------------------------
   inventory:
     build:
@@ -172,6 +198,23 @@ services:
       - ecommerce-network
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    container_name: 'redis'
+    ports:
+      - "6379:6379"
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
 
   # MongoDB for Auth Service
   mongo_auth:
@@ -250,6 +293,20 @@ services:
     volumes:
       - mongo_inventory_data:/data/db
 
+  # MongoDB for Inventory Service
+  mongo_inventory:
+    image: mongo:latest
+    container_name: 'mongo_inventory'
+    ports:
+      - "27020:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongo_inventory_data:/data/db
+
 #----------------------------------------------------------------
 # 6. NETWORKS & VOLUMES
 #----------------------------------------------------------------
@@ -262,3 +319,4 @@ volumes:
   mongo_product_data:
   mongo_order_data:
   mongo_inventory_data:
+  redis_data:
