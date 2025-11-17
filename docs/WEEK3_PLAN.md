@@ -13,15 +13,13 @@
 | 3 | **Update Order Service - Consumer PAYMENT_SUCCEEDED** | Implement consumer nhận event `PAYMENT_SUCCEEDED`. Update Order status từ PENDING → CONFIRMED. Sử dụng finite-state-machine library để manage transitions. | 🔴 High | 2 giờ |
 | 4 | **Update Order Service - Consumer PAYMENT_FAILED** | Implement consumer nhận event `PAYMENT_FAILED`. Update Order status từ PENDING → CANCELLED với cancellationReason. Log với correlationId. | 🔴 High | 1-2 giờ |
 | 5 | **Implement Compensation Logic - Inventory Release** | **CRITICAL:** Inventory Service consume event `PAYMENT_FAILED`. Logic: Tìm reservation dựa trên orderId → release stock (cộng ngược số lượng đã trừ). Sử dụng idempotency để tránh release 2 lần. | 🔴 Critical | 3-4 giờ |
-| 6 | **Tạo Notification Service** | Tạo service mới `services/notification` (stateless, không cần DB). Setup Dockerfile, thêm vào docker-compose.yml. | 🟡 Medium | 1-2 giờ |
-| 7 | **Implement Notification Consumers** | Implement 3 consumers cho Notification Service:<br>- `ORDER_CREATED`: Gửi email "Order pending"<br>- `PAYMENT_SUCCEEDED`: Gửi email "Order confirmed"<br>- `PAYMENT_FAILED`: Gửi email "Order cancelled"<br>Handler chỉ log thông tin (mock email sending). | 🟡 Medium | 2-3 giờ |
-| 8 | **Implement State Machine cho Order** | Refactor Order model để sử dụng finite-state-machine library (ví dụ: `javascript-state-machine`). Define transitions: PENDING → CONFIRMED, PENDING → CANCELLED. Validate state transitions. | 🟡 Medium | 2-3 giờ |
-| 9 | **Handle Partial Failures & Extended Compensation** | Mở rộng compensation logic: Nếu Payment succeed nhưng Notification fail, cần publish `COMPENSATE_PAYMENT` để rollback toàn chain. Implement compensation handlers. | 🔴 High | 3-4 giờ |
-| 10 | **Update API Gateway Routes** | Đảm bảo routing cho Payment Service (nếu cần health check endpoint). Update configuration. | 🟢 Low | 30 phút |
-| 11 | **Integration Testing - Happy Path** | Test end-to-end happy path: POST /orders → PENDING → STOCK_RESERVED → PAYMENT_SUCCEEDED → CONFIRMED. Verify all notifications sent. | 🔴 High | 2-3 giờ |
-| 12 | **Integration Testing - Compensation Path** | Test compensation flow: POST /orders → PENDING → STOCK_RESERVED → PAYMENT_FAILED → Inventory release → Order CANCELLED. Verify stock restored correctly. | 🔴 High | 2-3 giờ |
-| 13 | **Test Idempotency của Compensation** | Test duplicate compensation: Publish PAYMENT_FAILED 2 lần → verify stock chỉ release 1 lần. Check logs cho idempotency skip message. | 🟡 Medium | 1 giờ |
-| 14 | **Update Documentation** | Update System Requirements Specification với Payment/Notification services. Update MESSAGE_BROKER_ARCHITECTURE với compensation flows. Vẽ Mermaid diagram cho full Saga flow. | 🟢 Low | 1-2 giờ |
+| 6 | **Implement State Machine cho Order** | Refactor Order model để sử dụng finite-state-machine library (ví dụ: `javascript-state-machine`). Define transitions: PENDING → CONFIRMED, PENDING → CANCELLED. Validate state transitions. | 🟡 Medium | 2-3 giờ |
+| 7 | **Handle Extended Compensation** | Mở rộng compensation logic: Handle các edge cases như timeout, partial failures. Implement compensation handlers với proper error handling. | 🔴 High | 3-4 giờ |
+| 8 | **Update API Gateway Routes** | Đảm bảo routing cho Payment Service (nếu cần health check endpoint). Update configuration. | 🟢 Low | 30 phút |
+| 9 | **Integration Testing - Happy Path** | Test end-to-end happy path: POST /orders → PENDING → STOCK_RESERVED → PAYMENT_SUCCEEDED → CONFIRMED. | 🔴 High | 2-3 giờ |
+| 10 | **Integration Testing - Compensation Path** | Test compensation flow: POST /orders → PENDING → STOCK_RESERVED → PAYMENT_FAILED → Inventory release → Order CANCELLED. Verify stock restored correctly. | 🔴 High | 2-3 giờ |
+| 11 | **Test Idempotency của Compensation** | Test duplicate compensation: Publish PAYMENT_FAILED 2 lần → verify stock chỉ release 1 lần. Check logs cho idempotency skip message. | 🟡 Medium | 1 giờ |
+| 12 | **Update Documentation** | Update System Requirements Specification với Payment service. Update MESSAGE_BROKER_ARCHITECTURE với compensation flows. Vẽ Mermaid diagram cho full Saga flow. | 🟢 Low | 1-2 giờ |
 
 ---
 
@@ -40,8 +38,6 @@ Inventory Service → Check stock → Reserve → Publish STOCK_RESERVED
 Payment Service → Process payment → Publish PAYMENT_SUCCEEDED
        ↓
 Order Service → Update Order (CONFIRMED)
-       ↓
-Notification Service → Send confirmation email
 ```
 
 ### ❌ **Compensation Path (Payment Failed):**
@@ -53,17 +49,15 @@ Payment Service → Payment fails → Publish PAYMENT_FAILED
 Order Service → Update Order (CANCELLED)
        ↓
 Inventory Service → Release reserved stock (COMPENSATION)
-       ↓
-Notification Service → Send cancellation email
 ```
 
 ### ⚠️ **Extended Compensation (Partial Failure):**
 ```
-... (Payment succeeds)
+... (Payment succeeds but business validation fails)
        ↓
-Notification Service → Email sending fails (critical business rule)
+Order Service → Detect validation failure
        ↓
-Compensate Service → Publish COMPENSATE_PAYMENT
+Order Service → Publish COMPENSATE_PAYMENT
        ↓
 Payment Service → Refund transaction
        ↓
@@ -81,8 +75,8 @@ Order Service → Update Order (CANCELLED)
 - [ ] Order Service nhận `PAYMENT_SUCCEEDED` → status CONFIRMED
 - [ ] Order Service nhận `PAYMENT_FAILED` → status CANCELLED
 - [ ] Inventory Service nhận `PAYMENT_FAILED` → release stock đã reserve
-- [ ] Notification Service gửi email cho tất cả các trạng thái (ORDER_CREATED, CONFIRMED, CANCELLED)
 - [ ] State machine validate transitions (không thể CONFIRMED → PENDING)
+- [ ] Order Service logs status changes với proper tracing
 
 ### **Compensation Requirements:**
 - [ ] **Test Happy Path:** Full flow từ POST order → CONFIRMED thành công
@@ -107,13 +101,13 @@ Order Service → Update Order (CANCELLED)
 
 ## 📊 Estimated Total Time
 
-**Total:** 24-32 giờ (~3-4 ngày làm việc)
+**Total:** 18-24 giờ (~2-3 ngày làm việc)
 
 **Breakdown:**
-- Core Implementation: 13-17 giờ (Tasks 1-7)
-- Advanced Logic (State Machine, Compensation): 5-7 giờ (Tasks 8-9)
-- Testing & Validation: 5-6 giờ (Tasks 11-13)
-- Infrastructure & Docs: 1-2 giờ (Tasks 10, 14)
+- Core Implementation: 9-13 giờ (Tasks 1-5)
+- Advanced Logic (State Machine, Compensation): 5-7 giờ (Tasks 6-7)
+- Testing & Validation: 5-6 giờ (Tasks 9-11)
+- Infrastructure & Docs: 1-2 giờ (Tasks 8, 12)
 
 ---
 
@@ -203,16 +197,13 @@ broker.publish('payment.order.failed', { orderId, eventId: 'test-123' })
 | Order Created | `order.order.created` | Order Service | Inventory |
 | Stock Reserved | `inventory.order.reserved` | Inventory | Payment |
 | Stock Rejected | `inventory.order.reserve_failed` | Inventory | Order |
-| Payment Succeeded | `payment.order.succeeded` | Payment | Order, Notification |
-| Payment Failed | `payment.order.failed` | Payment | Order, Inventory, Notification |
-| Order Confirmed | `order.order.confirmed` | Order | Notification |
-| Order Cancelled | `order.order.cancelled` | Order | Notification |
-| Compensate Payment | `saga.payment.compensate` | Orchestrator | Payment |
+| Payment Succeeded | `payment.order.succeeded` | Payment | Order |
+| Payment Failed | `payment.order.failed` | Payment | Order, Inventory |
+| Compensate Payment | `saga.payment.compensate` | Order Service | Payment |
 
 **Queue Bindings:**
 - `payment.events` queue binds to: `inventory.order.reserved`, `inventory.order.reserve_failed`
 - `inventory.events` queue binds to: `order.#`, `payment.order.failed`
-- `notification.events` queue binds to: `order.#`, `payment.#`
 
 ---
 
@@ -225,7 +216,6 @@ sequenceDiagram
     participant Outbox
     participant Inventory
     participant Payment
-    participant Notification
 
     Client->>Order: POST /orders
     Order->>Order: Create Order (PENDING) + Outbox
@@ -239,15 +229,11 @@ sequenceDiagram
         alt Payment Success
             Payment->>Order: PAYMENT_SUCCEEDED
             Order->>Order: Update (CONFIRMED)
-            Payment->>Notification: PAYMENT_SUCCEEDED
-            Notification->>Notification: Send Confirmation Email
         else Payment Failed
             Payment->>Order: PAYMENT_FAILED
             Order->>Order: Update (CANCELLED)
             Payment->>Inventory: PAYMENT_FAILED
             Inventory->>Inventory: Release Stock (COMPENSATION)
-            Payment->>Notification: PAYMENT_FAILED
-            Notification->>Notification: Send Cancellation Email
         end
     else Stock Unavailable
         Inventory->>Order: STOCK_REJECTED
@@ -270,7 +256,7 @@ sequenceDiagram
 
 Tuần 3 được coi là hoàn thành khi:
 
-1. ✅ 4 services (Order, Inventory, Payment, Notification) hoạt động trong 1 Saga flow
+1. ✅ 3 services (Order, Inventory, Payment) hoạt động trong 1 Saga flow
 2. ✅ Happy path test pass: Order → CONFIRMED trong <5s
 3. ✅ Compensation test pass: Payment fail → Stock released → Order CANCELLED
 4. ✅ Idempotency test pass: Duplicate PAYMENT_FAILED → Single compensation
@@ -280,7 +266,7 @@ Tuần 3 được coi là hoàn thành khi:
 8. ✅ Không có race conditions hoặc inconsistent states trong DB
 
 **Deliverables:**
-- [ ] 2 new services: `services/payment`, `services/notification`
+- [ ] 1 new service: `services/payment`
 - [ ] Updated `services/order` với state machine
 - [ ] Updated `services/inventory` với compensation logic
 - [ ] 3 E2E test scripts: happy path, compensation, idempotency

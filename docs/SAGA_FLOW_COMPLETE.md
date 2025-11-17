@@ -1,8 +1,8 @@
 # 🎯 Luồng Saga hoàn chỉnh sau Tuần 6
 
-## 📊 Tổng quan Architecture
+## 📊Summary Tổng quan Architecture
 
-Sau khi hoàn thành 6 tuần, hệ thống sẽ có **6 microservices** với **Saga Pattern** hoàn chỉnh:
+Sau khi hoàn thành 6 tuần, hệ thống sẽ có **5 microservices** với **Saga Pattern** hoàn chỉnh:
 
 ```
 ┌─────────────┐
@@ -23,16 +23,10 @@ Sau khi hoàn thành 6 tuần, hệ thống sẽ có **6 microservices** với *
                       │                             │                     │
                       ▼                             ▼                     ▼
               ┌──────────────┐          ┌─────────────────┐    ┌──────────────┐
-              │   Product    │          │   Inventory     │    │ Notification │
+              │   Product    │          │   Inventory     │    │   Payment    │
               │   Service    │          │    Service      │    │   Service    │
               │ (Port 3004)  │          │  (No HTTP API)  │    │(No HTTP API) │
               └──────────────┘          └─────────────────┘    └──────────────┘
-                                                   │
-                                                   ▼
-                                        ┌─────────────────┐
-                                        │ Payment Service │
-                                        │ (No HTTP API)   │
-                                        └─────────────────┘
                                
                       ───────────── RabbitMQ ─────────────
                       
@@ -41,32 +35,26 @@ Sau khi hoàn thành 6 tuần, hệ thống sẽ có **6 microservices** với *
 
 ---
 
-## 🎪 Danh sách Events (11 events)
+## 🎪 Danh sách Events (7 events)
 
 ### **Core Business Events**
 | Event Name | Producer | Consumer(s) | Payload | Purpose |
-|------------|----------|-------------|---------|---------|
-| `ORDER_CREATED` | Order Service (via Outbox Processor) | Inventory, Notification | `{ orderId, products: [{productId, quantity}], userId, totalPrice }` | Trigger saga, bắt đầu check inventory |
+|------------|----------|-------------|---------|------|
+| `ORDER_CREATED` | Order Service (via Outbox Processor) | Inventory | `{ orderId, products: [{productId, quantity}], userId, totalPrice }` | Trigger saga, bắt đầu check inventory |
 | `STOCK_RESERVED` | Inventory Service | Payment, Order | `{ orderId, productIds, reservedAt, inventoryIds }` | Stock đủ, chuyển sang thanh toán |
-| `STOCK_REJECTED` | Inventory Service | Order, Notification | `{ orderId, reason: 'OUT_OF_STOCK', productId }` | Hết hàng, cancel order |
-| `PAYMENT_SUCCEEDED` | Payment Service | Order, Notification | `{ orderId, paymentId, amount, paidAt }` | Thanh toán thành công, confirm order |
-| `PAYMENT_FAILED` | Payment Service | Inventory (compensation), Order, Notification | `{ orderId, reason, attemptedAt }` | Thanh toán thất bại, rollback inventory |
+| `STOCK_REJECTED` | Inventory Service | Order | `{ orderId, reason: 'OUT_OF_STOCK', productId }` | Hết hàng, cancel order |
+| `PAYMENT_SUCCEEDED` | Payment Service | Order | `{ orderId, paymentId, amount, paidAt }` | Thanh toán thành công, confirm order |
+| `PAYMENT_FAILED` | Payment Service | Inventory (compensation), Order | `{ orderId, reason, attemptedAt }` | Thanh toán thất bại, rollback inventory |
 
 ### **Compensation Events (Rollback)**
 | Event Name | Producer | Consumer(s) | Payload | Purpose |
-|------------|----------|-------------|---------|---------|
+|------------|----------|-------------|---------|------|
 | `STOCK_RELEASED` | Inventory Service | - | `{ orderId, productIds, releasedAt }` | Release stock khi compensation |
-| `ORDER_CANCELLED` | Order Service | Notification | `{ orderId, cancellationReason, cancelledAt }` | Thông báo order đã bị hủy |
-
-### **Notification Events** (không trigger logic, chỉ notify)
-| Event Name | Purpose |
-|------------|---------|
-| `ORDER_CONFIRMED_NOTIFICATION` | Email/SMS: "Đơn hàng #{orderId} đã được xác nhận" |
-| `ORDER_CANCELLED_NOTIFICATION` | Email/SMS: "Đơn hàng #{orderId} đã bị hủy: {reason}" |
+| `ORDER_CANCELLED` | Order Service | - | `{ orderId, cancellationReason, cancelledAt }` | Order đã bị hủy |
 
 ### **Infrastructure Events**
 | Event Name | Producer | Consumer(s) | Purpose |
-|------------|----------|-------------|---------|
+|------------|----------|-------------|------|
 | `OUTBOX_PUBLISHED` | Outbox Processor | - | Log event: Outbox document đã publish thành công |
 
 ---
@@ -84,7 +72,6 @@ sequenceDiagram
     participant RMQ as RabbitMQ
     participant IS as Inventory Service
     participant PS as Payment Service
-    participant NS as Notification Service
 
     C->>AG: POST /orders/api/v1/orders
     AG->>OS: Forward request (with traceId)
@@ -112,12 +99,6 @@ sequenceDiagram
     RMQ->>OS: Consume PAYMENT_SUCCEEDED
     OS->>OS: Update Order (status: CONFIRMED)
     
-    RMQ->>NS: Consume ORDER_CREATED
-    NS->>NS: Log: "Send email: Order pending"
-    
-    RMQ->>NS: Consume PAYMENT_SUCCEEDED
-    NS->>NS: Log: "Send email: Order confirmed"
-    
     Note over C: Client polls GET /orders/{id}
     C->>AG: GET /orders/{id}
     AG->>OS: Forward
@@ -130,7 +111,6 @@ sequenceDiagram
 3. **T+100ms:** Inventory check + reserve stock
 4. **T+150ms:** Payment processing
 5. **T+200ms:** Order status → CONFIRMED
-6. **T+250ms:** Notification sent
 
 **Total E2E Latency:** ~200-300ms (P95 < 500ms theo target Tuần 5)
 
@@ -145,7 +125,6 @@ sequenceDiagram
     participant OB as Outbox Processor
     participant RMQ as RabbitMQ
     participant IS as Inventory Service
-    participant NS as Notification Service
 
     C->>OS: POST /orders
     OS->>C: 201 {orderId, status: PENDING}
@@ -158,9 +137,6 @@ sequenceDiagram
     
     RMQ->>OS: Consume STOCK_REJECTED
     OS->>OS: Update Order (status: CANCELLED, reason: OUT_OF_STOCK)
-    
-    RMQ->>NS: Consume STOCK_REJECTED
-    NS->>NS: Send email: "Order cancelled - Out of stock"
 ```
 
 ---
@@ -173,7 +149,6 @@ sequenceDiagram
     participant RMQ as RabbitMQ
     participant IS as Inventory Service
     participant PS as Payment Service
-    participant NS as Notification Service
 
     Note over OS: Order created, stock reserved
     
@@ -188,9 +163,6 @@ sequenceDiagram
     
     RMQ->>OS: Consume PAYMENT_FAILED
     OS->>OS: Update Order (status: CANCELLED, reason: PAYMENT_FAILED)
-    
-    RMQ->>NS: Consume PAYMENT_FAILED
-    NS->>NS: Send email: "Payment failed, order cancelled"
 ```
 
 **Compensation Logic:**
@@ -254,7 +226,7 @@ sequenceDiagram
 ### ✅ **Core Features**
 - [x] Transactional Outbox Pattern (at-least-once delivery)
 - [x] MongoDB Change Streams (CDC)
-- [x] Saga Orchestration (Order → Inventory → Payment → Notification)
+- [x] Saga Orchestration (Order → Inventory → Payment)
 - [x] Compensation Logic (rollback when payment fails)
 - [x] Idempotency (Redis-based, duplicate events bị skip)
 - [x] Schema Validation (Zod, sai schema → DLQ)
@@ -344,14 +316,13 @@ export default function() {
 
 ## 📦 Deliverables sau Tuần 6
 
-### **Services (6)**
+### **Services (5)**
 1. ✅ API Gateway (port 3003)
 2. ✅ Auth Service (port 3001)
 3. ✅ Order Service (port 3002) - với Outbox + Change Stream
 4. ✅ Product Service (port 3004)
 5. ✅ Inventory Service (no HTTP API) - consumer only
 6. ✅ Payment Service (no HTTP API) - consumer only
-7. ✅ Notification Service (no HTTP API) - consumer only
 
 ### **Shared Packages (4)**
 1. ✅ @ecommerce/broker - với idempotency, schema validation, tracing

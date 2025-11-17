@@ -61,8 +61,7 @@
 | **Tạo `Payment Service`** | Tạo `services/payment` (không cần DB). Thêm vào Docker Compose. |
 | **Viết `Payment Service` (Consumer)**| Dùng `broker.consume('STOCK_RESERVED', ...)`. <br> Logic handler: <br> 1. **Mock thanh toán:** Dùng `Math.random()` để quyết định thành công (> 0.1) hay thất bại (< 0.1). <br> 2. Publish `PAYMENT_SUCCEEDED` hoặc `PAYMENT_FAILED`. |
 | **Sửa `Order Service` (Consumer)** | 1. Dùng `broker.consume('PAYMENT_SUCCEEDED', ...)` → Cập nhật status `Order` thành `CONFIRMED`.<br> 2. Dùng `broker.consume('PAYMENT_FAILED', ...)` → Cập nhật status `Order` thành `CANCELLED`. Sử dụng state machine (finite-state-machine lib) trong Order model để manage statuses. |
-| **Logic Hoàn tác (Compensation)** | **Rất quan trọng!** <br> `Inventory Service` phải consume `PAYMENT_FAILED`. <br> Logic handler: Tìm lại hàng đã trừ (dựa trên `orderId`), **cộng ngược trở lại** (release stock). Logic này cũng phải được bọc trong `consume` để đảm bảo idempotent (tránh cộng kho 2 lần). Mở rộng để handle partial failures (ví dụ: nếu Payment succeed nhưng Notification fail, publish COMPENSATE_PAYMENT để rollback toàn chain). |
-| **Tạo `Notification Service`** | Tạo `services/notification` (không cần DB). <br> Logic: Consume các sự kiện `ORDER_CREATED` (để gửi email pending), `PAYMENT_SUCCEEDED`, `PAYMENT_FAILED`. <br> Handler: `logger.info({ correlationId, userEmail }, 'GỬI EMAIL: Đơn hàng của bạn đã [status]');` |
+| **Logic Hoàn tác (Compensation)** | **Rất quan trọng!** <br> `Inventory Service` phải consume `PAYMENT_FAILED`. <br> Logic handler: Tìm lại hàng đã trừ (dựa trên `orderId`), **cộng ngược trở lại** (release stock). Logic này cũng phải được bọc trong `consume` để đảm bảo idempotent (tránh cộng kho 2 lần). Mở rộng để handle partial failures (ví dụ: nếu Payment succeed nhưng business validation fail, publish COMPENSATE_PAYMENT để rollback toàn chain). |
 
 **✅ Tiêu chí hoàn thành (AC):**
 
@@ -76,7 +75,7 @@
 
 ### 📅 TUẦN 4: Safety Net (DLQ & Basic Tests)
 
-**Mục tiêu:** Đảm bảo hệ thống có thể xử lý "poison message" và thêm `Notification` service.
+**Mục tiêu:** Đảm bảo hệ thống có thể xử lý "poison message" và thêm các test cases.
 
 | Tên Task | Mô tả chi tiết |
 | :--- | :--- |
@@ -88,7 +87,7 @@
 **✅ Tiêu chí hoàn thành (AC):**
 
   * Một message lỗi (poison message) sẽ tự động bị ném vào DLQ và *không* làm crash service.
-  * Toàn bộ luồng (Order, Inventory, Payment, Notification) hoạt động với `correlationId` xuyên suốt.
+  * Toàn bộ luồng (Order, Inventory, Payment) hoạt động với `correlationId` xuyên suốt.
   * File `README.md` được cập nhật, có sơ đồ kiến trúc Saga.
   * README có phần 'Debugging Guide' với cách inspect DLQ và replay events.
 
