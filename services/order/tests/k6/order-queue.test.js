@@ -21,9 +21,15 @@ export const options = {
   },
 };
 
-const PRODUCT_URL = __ENV.PRODUCT_URL || "http://localhost:3003";
-const AUTH_URL = __ENV.AUTH_URL || "http://localhost:3001";
+// API Gateway URLs (E2E path)
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3003'
+const AUTH_URL = `${BASE_URL}/auth`
+const PRODUCTS_URL = `${BASE_URL}/products`
+const ORDERS_URL = `${BASE_URL}/orders`
 
+const orderFlowSuccess = new Rate('order_flow_success')
+const orderStatusConfirmed = new Rate('order_status_confirmed')
+const orderStatusCancelled = new Rate('order_status_cancelled')
 // Setup: Create test products and get token
 export function setup() {
   // 1. Get auth token
