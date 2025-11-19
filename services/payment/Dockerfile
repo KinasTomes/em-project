@@ -11,55 +11,51 @@ COPY pnpm-workspace.yaml .
 COPY .npmrc .
 COPY package.json .
 
-# Copy all package.json files from shared packages and services
+# Copy all package.json files from shared packages and services needed for install
 COPY packages/config/package.json ./packages/config/
 COPY packages/logger/package.json ./packages/logger/
 COPY packages/message-broker/package.json ./packages/message-broker/
 COPY packages/outbox-pattern/package.json ./packages/outbox-pattern/
 COPY packages/tracing/package.json ./packages/tracing/
-COPY services/inventory/package.json ./services/inventory/
+COPY services/payment/package.json ./services/payment/
 
 # Copy the lockfile
 COPY pnpm-lock.yaml .
 
-# Install all dependencies for the entire monorepo
-# This leverages Docker caching, as this layer only changes when dependencies change.
+# Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Copy shared packages source code AFTER install so pnpm can create proper workspace links
+# Copy shared packages source
 COPY packages/config ./packages/config
 COPY packages/logger ./packages/logger
 COPY packages/message-broker ./packages/message-broker
 COPY packages/outbox-pattern ./packages/outbox-pattern
 COPY packages/tracing ./packages/tracing
 
-# Stage 2: Build the final service image
+# Stage 2: final runtime image
 FROM node:18-alpine
 
-# Install pnpm
 RUN npm install -g pnpm@10.20.0
 
 WORKDIR /app
 
-# Copy workspace files
 COPY pnpm-workspace.yaml .
 COPY package.json .
 COPY pnpm-lock.yaml .
 
-# Copy the installed dependencies from deps stage
+# Copy installed dependencies
 COPY --from=deps /app/node_modules ./node_modules
 
-# Copy shared packages from deps stage
+# Copy workspace packages
 COPY --from=deps /app/packages ./packages
 
-# Copy inventory service files
-COPY services/inventory ./services/inventory
+# Copy payment service source
+COPY services/payment ./services/payment
 
-# Set working directory back to root for pnpm workspace
 WORKDIR /app
 
-# Run pnpm install again to create symlinks for workspace packages
+# Re-link workspace deps
 RUN pnpm install --frozen-lockfile
 
-# Set the command to start the inventory service using pnpm filter
-CMD [ "pnpm", "--filter", "@ecommerce/inventory", "start" ]
+CMD ["pnpm", "--filter", "@ecommerce/payment", "start"]
+

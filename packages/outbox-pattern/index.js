@@ -52,19 +52,37 @@
  * });
  */
 
-// Export models
+import {
+  createOutboxModel,
+  createOutboxEvent,
+  outboxSchema,
+} from './models/OutboxModel.js'
+
+import {
+  OutboxProcessor,
+  startOutboxProcessor,
+} from './processors/OutboxProcessor.js'
+
+import { OutboxManager } from './OutboxManager.js'
+
+const OutboxProcessorClass = OutboxProcessor
+
 export {
   createOutboxModel,
   createOutboxEvent,
-  default as outboxSchema
-} from './models/OutboxModel.js';
-
-// Export processors
-export {
+  outboxSchema,
   OutboxProcessor,
   startOutboxProcessor,
-  default as OutboxProcessorClass
-} from './processors/OutboxProcessor.js';
+  OutboxProcessorClass,
+  OutboxManager,
+}
 
-// Export convenience wrapper
-export { OutboxManager } from './OutboxManager.js';
+export default {
+  createOutboxModel,
+  createOutboxEvent,
+  outboxSchema,
+  OutboxProcessor,
+  startOutboxProcessor,
+  OutboxProcessorClass,
+  OutboxManager,
+}

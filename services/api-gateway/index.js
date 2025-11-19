@@ -131,6 +131,7 @@ app.listen(config.port, () => {
         auth: config.authServiceUrl,
         product: config.productServiceUrl,
         order: config.orderServiceUrl,
+        inventory: config.inventoryServiceUrl,
       },
     },
     "API Gateway started successfully"

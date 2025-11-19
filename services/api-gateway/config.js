@@ -5,4 +5,5 @@ module.exports = {
   authServiceUrl: process.env.AUTH_SERVICE_URL || "http://localhost:3001",
   productServiceUrl: process.env.PRODUCT_SERVICE_URL || "http://localhost:3004",
   orderServiceUrl: process.env.ORDER_SERVICE_URL || "http://localhost:3002",
+  inventoryServiceUrl: process.env.INVENTORY_SERVICE_URL || "http://localhost:3005",
 };
