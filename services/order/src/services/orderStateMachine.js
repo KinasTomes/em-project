@@ -6,10 +6,18 @@ const logger = require('@ecommerce/logger')
  * 
  * Valid transitions:
  * - PENDING → CONFIRMED (when all inventory reserved)
- * - PENDING → PAID (when payment succeeded directly)
- * - PENDING → CANCELLED (when inventory reserve failed or payment failed)
+ * - PENDING → CANCELLED (when inventory reserve failed)
+ * - CONFIRMED → PAID (when payment succeeded)
+ * - CONFIRMED → CANCELLED (when payment failed)
  * 
- * Final states: CONFIRMED, PAID, CANCELLED (cannot transition from these)
+ * Flow: PENDING → CONFIRMED → PAID (happy path)
+ *       PENDING → CANCELLED (inventory failed)
+ *       CONFIRMED → CANCELLED (payment failed)
+ * 
+ * Rules:
+ * - Order MUST be CONFIRMED before it can be PAID
+ * - Cannot transition directly from PENDING → PAID
+ * - Final states: PAID, CANCELLED (cannot transition from these)
  */
 class OrderStateMachine {
 	constructor(initialState = 'PENDING') {
@@ -17,8 +25,8 @@ class OrderStateMachine {
 			initial: initialState,
 			events: [
 				{ name: 'confirm', from: 'PENDING', to: 'CONFIRMED' },
-				{ name: 'pay', from: 'PENDING', to: 'PAID' },
-				{ name: 'cancel', from: 'PENDING', to: 'CANCELLED' },
+				{ name: 'pay', from: 'CONFIRMED', to: 'PAID' },
+				{ name: 'cancel', from: ['PENDING', 'CONFIRMED'], to: 'CANCELLED' },
 			],
 			callbacks: {
 				onenterstate: (lifecycle, from, to) => {
@@ -58,7 +66,7 @@ class OrderStateMachine {
 	 * Check if current state is final state
 	 */
 	isFinalState() {
-		const finalStates = ['CONFIRMED', 'PAID', 'CANCELLED']
+		const finalStates = ['PAID', 'CANCELLED']
 		return finalStates.includes(this.fsm.current)
 	}
 
@@ -77,11 +85,13 @@ class OrderStateMachine {
 
 	/**
 	 * Transition to PAID (when payment succeeded)
+	 * Can ONLY transition from CONFIRMED state
+	 * Order must be confirmed (inventory reserved) before payment
 	 */
 	pay() {
 		if (!this.can('pay')) {
 			throw new Error(
-				`Cannot pay order from state: ${this.fsm.current}`
+				`Cannot pay order from state: ${this.fsm.current}. Order must be CONFIRMED before payment.`
 			)
 		}
 		this.fsm.pay()
@@ -89,12 +99,13 @@ class OrderStateMachine {
 	}
 
 	/**
-	 * Transition to CANCELLED (when inventory reserve failed or payment failed)
+	 * Transition to CANCELLED
+	 * Can transition from PENDING (inventory reserve failed) or CONFIRMED (payment failed)
 	 */
 	cancel() {
 		if (!this.can('cancel')) {
 			throw new Error(
-				`Cannot cancel order from state: ${this.fsm.current}`
+				`Cannot cancel order from state: ${this.fsm.current}. Allowed from: PENDING, CONFIRMED`
 			)
 		}
 		this.fsm.cancel()

@@ -165,6 +165,14 @@ class App {
 								eventType: 'ORDER_CONFIRMED',
 								payload: {
 									orderId: order._id,
+									totalPrice: order.totalPrice,
+									currency: 'USD',
+									products: order.products.map((p) => ({
+										productId: p._id.toString(),
+										quantity: p.quantity,
+										price: p.price,
+									})),
+									userId: order.user,
 									timestamp: new Date().toISOString(),
 								},
 								session,
@@ -307,10 +315,25 @@ class App {
 			return
 		}
 
+		// Validate that order is in CONFIRMED state before payment
+		if (order.status !== 'CONFIRMED') {
+			logger.error(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
+					order.status
+			)
+			return
+		}
+
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				// Use state machine to validate transition: PENDING → PAID
+				// Use state machine to validate transition: CONFIRMED → PAID
+				// Order must be CONFIRMED (inventory reserved) before payment
 				try {
 					fsm.pay()
 					order.status = fsm.getState()
@@ -319,7 +342,7 @@ class App {
 					logger.info(
 						{
 							orderId: order._id,
-							oldStatus: 'PENDING',
+							oldStatus: 'CONFIRMED',
 							newStatus: order.status,
 							transactionId: payload.transactionId,
 							correlationId,
@@ -391,10 +414,24 @@ class App {
 			return
 		}
 
+		// Validate that order is in CONFIRMED state (payment can only fail if order was confirmed)
+		if (order.status !== 'CONFIRMED') {
+			logger.error(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
+					order.status
+			)
+			return
+		}
+
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				// Use state machine to validate transition: PENDING → CANCELLED
+				// Use state machine to validate transition: CONFIRMED → CANCELLED
 				try {
 					fsm.cancel()
 					order.status = fsm.getState()
@@ -404,7 +441,7 @@ class App {
 					logger.info(
 						{
 							orderId: order._id,
-							oldStatus: 'PENDING',
+							oldStatus: 'CONFIRMED',
 							newStatus: order.status,
 							cancellationReason: order.cancellationReason,
 							transactionId: payload.transactionId,

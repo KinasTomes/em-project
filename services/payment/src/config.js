@@ -14,9 +14,9 @@ const clampRate = (value, fallback) => {
 const config = {
 	serviceName: 'payment-service',
 	port: parseNumber(process.env.PAYMENT_PORT, 3006),
+	mongoURI: baseConfig.getMongoURI('payment'),
 	queues: {
-		stockReserved: process.env.STOCK_RESERVED_QUEUE || 'STOCK_RESERVED',
-		orderEvents: process.env.ORDER_EVENTS_QUEUE || 'orders',
+		orderEvents: process.env.ORDER_EVENTS_QUEUE || 'orders', // Consume ORDER_CONFIRMED from here
 		inventoryEvents: process.env.INVENTORY_EVENTS_QUEUE || 'inventory',
 	},
 	payment: {
