@@ -22,6 +22,7 @@ const orderSchema = new mongoose.Schema(
 			enum: ['PENDING', 'CONFIRMED', 'CANCELLED', 'PAID'],
 			default: 'PENDING',
 		},
+		cancellationReason: { type: String },
 		createdAt: { type: Date, default: Date.now },
 	},
 	{ collection: 'orders' }

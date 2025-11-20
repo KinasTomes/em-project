@@ -6,6 +6,7 @@ const Order = require('./models/order')
 const OrderService = require('./services/orderService')
 const OrderController = require('./controllers/orderController')
 const orderRoutes = require('./routes/orderRoutes')
+const { createOrderStateMachine } = require('./services/orderStateMachine')
 
 // Import ES modules dynamically
 let OutboxManager
@@ -77,8 +78,12 @@ class App {
 				case 'INVENTORY_RESERVE_FAILED':
 					await this._handleInventoryReserveFailed(payload, correlationId)
 					break
+				case 'PAYMENT_SUCCEEDED':
+					await this._handlePaymentSucceeded(payload, correlationId)
+					break
 				case 'PAYMENT_COMPLETED':
-					await this._handlePaymentCompleted(payload, correlationId)
+					// Backward compatibility - treat as PAYMENT_SUCCEEDED
+					await this._handlePaymentSucceeded(payload, correlationId)
 					break
 				case 'PAYMENT_FAILED':
 					await this._handlePaymentFailed(payload, correlationId)
@@ -97,15 +102,29 @@ class App {
 
 	async _handleInventoryReserved(payload, correlationId) {
 		logger.info(
-			{ orderId: payload.orderId, correlationId },
-			'Processing INVENTORY_RESERVED'
+			{ orderId: payload.orderId, productId: payload.productId, correlationId },
+			'[Order] Processing INVENTORY_RESERVED'
 		)
 
 		const order = await Order.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
-				'Order not found for INVENTORY_RESERVED'
+				'[Order] Order not found for INVENTORY_RESERVED'
+			)
+			return
+		}
+
+		// Check if order is already in final state
+		const fsm = createOrderStateMachine(order.status)
+		if (fsm.isFinalState()) {
+			logger.warn(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Order already in final state, skipping inventory reserved update'
 			)
 			return
 		}
@@ -127,16 +146,50 @@ class App {
 						(product) => product.reserved === true
 					)
 					if (allReserved) {
-						order.status = 'CONFIRMED'
-						await this.outboxManager.createEvent({
-							eventType: 'ORDER_CONFIRMED',
-							payload: {
-								orderId: order._id,
-								timestamp: new Date().toISOString(),
-							},
-							session,
-							correlationId,
-						})
+						// Use state machine to validate transition: PENDING → CONFIRMED
+						try {
+							fsm.confirm()
+							order.status = fsm.getState()
+							
+							logger.info(
+								{
+									orderId: order._id,
+									oldStatus: 'PENDING',
+									newStatus: order.status,
+									correlationId,
+								},
+								'[Order] Order status updated to CONFIRMED (all inventory reserved)'
+							)
+
+							await this.outboxManager.createEvent({
+								eventType: 'ORDER_CONFIRMED',
+								payload: {
+									orderId: order._id,
+									totalPrice: order.totalPrice,
+									currency: 'USD',
+									products: order.products.map((p) => ({
+										productId: p._id.toString(),
+										quantity: p.quantity,
+										price: p.price,
+									})),
+									userId: order.user,
+									timestamp: new Date().toISOString(),
+								},
+								session,
+								correlationId,
+							})
+						} catch (error) {
+							logger.error(
+								{
+									error: error.message,
+									orderId: payload.orderId,
+									currentStatus: order.status,
+									correlationId,
+								},
+								'[Order] Invalid state transition for INVENTORY_RESERVED'
+							)
+							throw error
+						}
 					}
 
 					await order.save({ session })
@@ -149,15 +202,33 @@ class App {
 
 	async _handleInventoryReserveFailed(payload, correlationId) {
 		logger.warn(
-			{ orderId: payload.orderId, reason: payload.reason, correlationId },
-			'Processing INVENTORY_RESERVE_FAILED'
+			{
+				orderId: payload.orderId,
+				reason: payload.reason,
+				correlationId,
+			},
+			'[Order] Processing INVENTORY_RESERVE_FAILED'
 		)
 
 		const order = await Order.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
-				'Order not found for INVENTORY_RESERVE_FAILED'
+				'[Order] Order not found for INVENTORY_RESERVE_FAILED'
+			)
+			return
+		}
+
+		// Check if order is already in final state
+		const fsm = createOrderStateMachine(order.status)
+		if (fsm.isFinalState()) {
+			logger.warn(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Order already in final state, skipping transition'
 			)
 			return
 		}
@@ -165,36 +236,95 @@ class App {
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				order.status = 'CANCELLED'
-				await order.save({ session })
+				// Use state machine to validate transition
+				try {
+					fsm.cancel()
+					order.status = fsm.getState()
+					order.cancellationReason = payload.reason || 'Inventory reserve failed'
+					await order.save({ session })
 
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_CANCELLED',
-					payload: {
-						orderId: order._id,
-						reason: payload.reason,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-				})
+					logger.info(
+						{
+							orderId: order._id,
+							oldStatus: 'PENDING',
+							newStatus: order.status,
+							cancellationReason: order.cancellationReason,
+							correlationId,
+						},
+						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
+					)
+
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_CANCELLED',
+						payload: {
+							orderId: order._id,
+							reason: order.cancellationReason,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+					})
+				} catch (error) {
+					logger.error(
+						{
+							error: error.message,
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Invalid state transition for INVENTORY_RESERVE_FAILED'
+					)
+					throw error
+				}
 			})
 		} finally {
 			session.endSession()
 		}
 	}
 
-	async _handlePaymentCompleted(payload, correlationId) {
+	async _handlePaymentSucceeded(payload, correlationId) {
 		logger.info(
-			{ orderId: payload.orderId, correlationId },
-			'Processing PAYMENT_COMPLETED'
+			{
+				orderId: payload.orderId,
+				transactionId: payload.transactionId,
+				correlationId,
+			},
+			'[Order] Processing PAYMENT_SUCCEEDED'
 		)
 
 		const order = await Order.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
-				'Order not found for PAYMENT_COMPLETED'
+				'[Order] Order not found for PAYMENT_SUCCEEDED'
+			)
+			return
+		}
+
+		// Check if order is already in final state
+		const fsm = createOrderStateMachine(order.status)
+		if (fsm.isFinalState()) {
+			logger.warn(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Order already in final state, skipping transition'
+			)
+			return
+		}
+
+		// Validate that order is in CONFIRMED state before payment
+		if (order.status !== 'CONFIRMED') {
+			logger.error(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
+					order.status
 			)
 			return
 		}
@@ -202,19 +332,48 @@ class App {
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				order.status = 'PAID'
-				await order.save({ session })
+				// Use state machine to validate transition: CONFIRMED → PAID
+				// Order must be CONFIRMED (inventory reserved) before payment
+				try {
+					fsm.pay()
+					order.status = fsm.getState()
+					await order.save({ session })
 
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_PAID',
-					payload: {
-						orderId: order._id,
-						transactionId: payload.transactionId,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-				})
+					logger.info(
+						{
+							orderId: order._id,
+							oldStatus: 'CONFIRMED',
+							newStatus: order.status,
+							transactionId: payload.transactionId,
+							correlationId,
+						},
+						'[Order] Order status updated to PAID (payment succeeded)'
+					)
+
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_PAID',
+						payload: {
+							orderId: order._id,
+							transactionId: payload.transactionId,
+							amount: payload.amount,
+							currency: payload.currency,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+					})
+				} catch (error) {
+					logger.error(
+						{
+							error: error.message,
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Invalid state transition for PAYMENT_SUCCEEDED'
+					)
+					throw error
+				}
 			})
 		} finally {
 			session.endSession()
@@ -223,15 +382,48 @@ class App {
 
 	async _handlePaymentFailed(payload, correlationId) {
 		logger.warn(
-			{ orderId: payload.orderId, reason: payload.reason, correlationId },
-			'Processing PAYMENT_FAILED'
+			{
+				orderId: payload.orderId,
+				reason: payload.reason,
+				transactionId: payload.transactionId,
+				correlationId,
+			},
+			'[Order] Processing PAYMENT_FAILED'
 		)
 
 		const order = await Order.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
-				'Order not found for PAYMENT_FAILED'
+				'[Order] Order not found for PAYMENT_FAILED'
+			)
+			return
+		}
+
+		// Check if order is already in final state
+		const fsm = createOrderStateMachine(order.status)
+		if (fsm.isFinalState()) {
+			logger.warn(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Order already in final state, skipping transition'
+			)
+			return
+		}
+
+		// Validate that order is in CONFIRMED state (payment can only fail if order was confirmed)
+		if (order.status !== 'CONFIRMED') {
+			logger.error(
+				{
+					orderId: payload.orderId,
+					currentStatus: order.status,
+					correlationId,
+				},
+				'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
+					order.status
 			)
 			return
 		}
@@ -239,40 +431,69 @@ class App {
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				order.status = 'CANCELLED'
-				await order.save({ session })
+				// Use state machine to validate transition: CONFIRMED → CANCELLED
+				try {
+					fsm.cancel()
+					order.status = fsm.getState()
+					order.cancellationReason = payload.reason || 'Payment failed'
+					await order.save({ session })
 
-				for (const product of order.products) {
-					if (product.reserved) {
-						await this.outboxManager.createEvent({
-							eventType: 'INVENTORY_RELEASE_REQUEST',
-							payload: {
-								type: 'RELEASE',
-								data: {
-									orderId: order._id,
-									productId: product._id.toString(),
-									quantity: product.quantity,
-									reason: 'PAYMENT_FAILED',
-								},
-								timestamp: new Date().toISOString(),
-							},
-							session,
+					logger.info(
+						{
+							orderId: order._id,
+							oldStatus: 'CONFIRMED',
+							newStatus: order.status,
+							cancellationReason: order.cancellationReason,
+							transactionId: payload.transactionId,
 							correlationId,
-							destination: 'inventory',
-						})
-					}
-				}
+						},
+						'[Order] Order status updated to CANCELLED (payment failed)'
+					)
 
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_CANCELLED',
-					payload: {
-						orderId: order._id,
-						reason: `Payment failed: ${payload.reason}`,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-				})
+					// Release reserved inventory (compensation)
+					for (const product of order.products) {
+						if (product.reserved) {
+							await this.outboxManager.createEvent({
+								eventType: 'INVENTORY_RELEASE_REQUEST',
+								payload: {
+									type: 'RELEASE',
+									data: {
+										orderId: order._id,
+										productId: product._id.toString(),
+										quantity: product.quantity,
+										reason: 'PAYMENT_FAILED',
+									},
+									timestamp: new Date().toISOString(),
+								},
+								session,
+								correlationId,
+								destination: 'inventory',
+							})
+						}
+					}
+
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_CANCELLED',
+						payload: {
+							orderId: order._id,
+							reason: order.cancellationReason,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+					})
+				} catch (error) {
+					logger.error(
+						{
+							error: error.message,
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Invalid state transition for PAYMENT_FAILED'
+					)
+					throw error
+				}
 			})
 		} finally {
 			session.endSession()

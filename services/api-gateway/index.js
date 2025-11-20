@@ -13,6 +13,31 @@ const httpProxy = require("http-proxy");
 const logger = require("@ecommerce/logger");
 
 const proxy = httpProxy.createProxyServer();
+
+proxy.on('error', (err, req, res) => {
+	logger.error(
+		{
+			error: err.message,
+			code: err.code,
+			target: req?.url,
+			method: req?.method,
+		},
+		'❌ Proxy error - downstream service unavailable'
+	)
+
+	if (!res.headersSent) {
+		res.writeHead(503, { 'Content-Type': 'application/json' })
+	}
+
+	res.end(
+		JSON.stringify({
+			error: 'Service Unavailable',
+			message: `Downstream service is not available: ${err.message}`,
+			code: err.code,
+		})
+	)
+})
+
 const app = express();
 
 // Route requests to the auth service
@@ -21,7 +46,11 @@ app.use("/auth", (req, res) => {
     { path: req.path, method: req.method },
     "Routing to auth service"
   );
-  proxy.web(req, res, { target: config.authServiceUrl });
+  proxy.web(req, res, { 
+    target: config.authServiceUrl,
+    timeout: 10000,
+    proxyTimeout: 10000,
+  });
 });
 
 // Route requests to the product service
@@ -39,7 +68,11 @@ app.use("/products", (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/products${suffix}`;
-  proxy.web(req, res, { target: config.productServiceUrl });
+  proxy.web(req, res, { 
+    target: config.productServiceUrl,
+    timeout: 10000,
+    proxyTimeout: 10000,
+  });
 });
 
 // Route requests to the order service
@@ -57,7 +90,11 @@ app.use("/orders", (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/orders${suffix}`;
-  proxy.web(req, res, { target: config.orderServiceUrl });
+  proxy.web(req, res, { 
+    target: config.orderServiceUrl,
+    timeout: 10000,
+    proxyTimeout: 10000,
+  });
 });
 
 // Route requests to the inventory service
@@ -77,7 +114,11 @@ app.use("/inventory", (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/inventory${suffix}`;
-  proxy.web(req, res, { target: inventoryServiceUrl });
+  proxy.web(req, res, { 
+    target: inventoryServiceUrl,
+    timeout: 10000,
+    proxyTimeout: 10000,
+  });
 });
 
 // Start the server
