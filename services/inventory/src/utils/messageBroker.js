@@ -2,6 +2,7 @@ const amqp = require("amqplib");
 const config = require("../config");
 const logger = require("@ecommerce/logger");
 const inventoryService = require("../services/inventoryService");
+const processedMessageRepository = require("../repositories/processedMessageRepository");
 
 class MessageBroker {
   constructor() {
@@ -42,6 +43,16 @@ class MessageBroker {
           }
         });
         await this.channel.assertQueue(`RESERVE.dlq`, { durable: true });
+
+        // PAYMENT_FAILED compensation events
+        await this.channel.assertQueue("PAYMENT_FAILED", {
+          durable: true,
+          arguments: {
+            'x-dead-letter-exchange': '',
+            'x-dead-letter-routing-key': `PAYMENT_FAILED.dlq`
+          }
+        });
+        await this.channel.assertQueue(`PAYMENT_FAILED.dlq`, { durable: true });
 
         logger.info("✓ [Inventory] RabbitMQ connected");
 
@@ -92,9 +103,21 @@ class MessageBroker {
    */
   startConsuming() {
     // Consume RESERVE requests published with eventType as queue name
-    this.consumeMessage("RESERVE", async (payload) => {
-      await this.handleReserveRequest(payload);
-    });
+    this.consumeMessage(
+      "RESERVE",
+      async (payload, meta) => {
+        await this.handleReserveRequest(payload, meta);
+      },
+      { idempotent: true }
+    );
+
+    this.consumeMessage(
+      "PAYMENT_FAILED",
+      async (payload, meta) => {
+        await this.handlePaymentFailedEvent(payload, meta);
+      },
+      { idempotent: true, messageIdExtractor: (body) => body?.eventId || body?.id }
+    );
   }
 
   /**
@@ -294,6 +317,95 @@ class MessageBroker {
   }
 
   /**
+   * Handle payment failed events to release inventory reservations
+   */
+  async handlePaymentFailedEvent(data, meta = {}) {
+    const messageId = meta?.messageId;
+    const orderId = data?.orderId;
+    const reason = data?.reason || "PAYMENT_FAILED";
+
+    logger.warn(
+      {
+        orderId,
+        messageId,
+        reason,
+      },
+      `[Inventory] Handling PAYMENT_FAILED compensation`
+    );
+
+    const rawItems = Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.products)
+      ? data.products
+      : [];
+
+    const normalizedItems = rawItems.length
+      ? rawItems
+      : data?.productId && data?.quantity
+      ? [{ productId: data.productId, quantity: data.quantity }]
+      : [];
+
+    if (!normalizedItems.length) {
+      logger.warn(
+        {
+          orderId,
+          payload: data,
+          messageId,
+        },
+        `[Inventory] PAYMENT_FAILED event missing releasable items`
+      );
+      return;
+    }
+
+    for (const item of normalizedItems) {
+      const { productId, quantity } = item || {};
+      const normalizedQuantity = Number(quantity);
+
+      if (!productId || !Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
+        logger.warn(
+          {
+            orderId,
+            productId,
+            quantity,
+            messageId,
+          },
+          `[Inventory] Skipping invalid compensation item`
+        );
+        continue;
+      }
+
+      try {
+        await inventoryService.releaseReserved(productId, normalizedQuantity);
+        logger.info(
+          {
+            orderId,
+            productId,
+            quantity: normalizedQuantity,
+            messageId,
+          },
+          `[Inventory] Released reserved stock due to PAYMENT_FAILED`
+        );
+      } catch (error) {
+        // Treat already-released items as idempotent success
+        if (error.message?.includes("Cannot release")) {
+          logger.warn(
+            {
+              orderId,
+              productId,
+              quantity: normalizedQuantity,
+              messageId,
+            },
+            `[Inventory] Reservation already released, treating as idempotent`
+          );
+          continue;
+        }
+
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Publish message to a queue
    */
   async publishMessage(queue, message) {
@@ -335,11 +447,13 @@ class MessageBroker {
   /**
    * Consume messages from a queue
    */
-  async consumeMessage(queue, callback) {
+  async consumeMessage(queue, callback, options = {}) {
     if (!this.channel) {
       logger.error("[Inventory] No RabbitMQ channel available.");
       return;
     }
+
+    const { idempotent = false, messageIdExtractor } = options;
 
     try {
       await this.channel.consume(
@@ -352,7 +466,54 @@ class MessageBroker {
           try {
             const content = msg.content.toString();
             const parsedContent = JSON.parse(content);
-            await callback(parsedContent);
+            const messageIdFromHeaders = msg.properties?.messageId;
+            const extractedMessageId =
+              messageIdFromHeaders ||
+              (typeof messageIdExtractor === "function"
+                ? messageIdExtractor(parsedContent, msg)
+                : undefined) ||
+              parsedContent?.eventId ||
+              parsedContent?.id ||
+              parsedContent?.messageId;
+
+            if (idempotent) {
+              if (!extractedMessageId) {
+                logger.warn(
+                  {
+                    queue,
+                  },
+                  `[Inventory] Received idempotent message without messageId`
+                );
+              } else {
+                const alreadyProcessed = await processedMessageRepository.hasProcessed(
+                  extractedMessageId
+                );
+                if (alreadyProcessed) {
+                  logger.warn(
+                    {
+                      queue,
+                      messageId: extractedMessageId,
+                    },
+                    `[Inventory] Duplicate message detected, acking without processing`
+                  );
+                  this.channel.ack(msg);
+                  return;
+                }
+              }
+            }
+
+            await callback(parsedContent, {
+              messageId: extractedMessageId,
+              raw: msg,
+            });
+
+            if (idempotent && extractedMessageId) {
+              await processedMessageRepository.markProcessed(
+                extractedMessageId,
+                queue
+              );
+            }
+
             this.channel.ack(msg);
           } catch (error) {
             logger.error(
