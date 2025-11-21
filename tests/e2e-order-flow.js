@@ -270,13 +270,19 @@ async function runE2ETest() {
     logInfo('Order status should change to CONFIRMED or CANCELLED\n');
 
     // ============================================================
-    // STEP 6: Poll Order Status
+    // STEP 6: Poll Order Status (Full SAGA Flow)
     // ============================================================
-    logStep(6, 'Polling Order Status (until CONFIRMED or CANCELLED)');
+    logStep(6, 'Polling Order Status (until PAID or CANCELLED)');
+    logInfo('Expected flow:');
+    logInfo('  PENDING → CONFIRMED (inventory reserved) → PAID (payment succeeded)');
+    logInfo('  OR');
+    logInfo('  PENDING → CANCELLED (inventory failed or payment failed)\n');
     
     const startTime = Date.now();
     let finalStatus = null;
+    let orderData = null;
     let attempts = 0;
+    let statusHistory = ['PENDING'];
 
     while (Date.now() - startTime < MAX_WAIT_TIME) {
       attempts++;
@@ -291,12 +297,20 @@ async function runE2ETest() {
         }
 
         const currentStatus = data.status;
-        logInfo(`[Attempt ${attempts}] Current status: ${currentStatus}`);
+        
+        // Track status changes
+        if (statusHistory[statusHistory.length - 1] !== currentStatus) {
+          statusHistory.push(currentStatus);
+          logSuccess(`Status changed: ${statusHistory[statusHistory.length - 2]} → ${currentStatus}`);
+        } else {
+          logInfo(`[Attempt ${attempts}] Current status: ${currentStatus}`);
+        }
 
-        if (currentStatus === 'CONFIRMED' || currentStatus === 'CANCELLED') {
+        // Check for final states
+        if (currentStatus === 'PAID' || currentStatus === 'CANCELLED') {
           finalStatus = currentStatus;
+          orderData = data;
           logSuccess(`Order reached final status: ${finalStatus}`);
-          logInfo(`Order details: ${JSON.stringify(data, null, 2)}`);
           break;
         }
 
@@ -309,20 +323,82 @@ async function runE2ETest() {
 
     if (!finalStatus) {
       logError(`Timeout: Order did not reach final status after ${MAX_WAIT_TIME}ms`);
+      logError(`Last known status: ${statusHistory[statusHistory.length - 1]}`);
+      logError(`Status history: ${statusHistory.join(' → ')}`);
       throw new Error('Order processing timeout');
     }
 
     // ============================================================
     // STEP 7: Verify Final State
     // ============================================================
-    logStep(7, 'Verify Final State');
+    logStep(7, 'Verify Final State & Payment Status');
     
-    if (finalStatus === 'CONFIRMED') {
-      logSuccess('✓ Order flow completed successfully!');
-      logInfo('Flow: POST /orders → PENDING → Outbox → RabbitMQ → Inventory → CONFIRMED');
+    logInfo(`Status history: ${statusHistory.join(' → ')}`);
+    logInfo(`Final order details:`);
+    logInfo(JSON.stringify(orderData, null, 2));
+    
+    if (finalStatus === 'PAID') {
+      logSuccess('✓ Full SAGA flow completed successfully!');
+      logInfo('Flow: PENDING → Inventory Reserve → CONFIRMED → Payment Process → PAID');
+      logSuccess('✓ Payment succeeded');
+      
+      // Verify expected status transitions
+      if (statusHistory.includes('CONFIRMED')) {
+        logSuccess('✓ Order was confirmed (inventory reserved)');
+      } else {
+        logError('⚠️  Order skipped CONFIRMED state (unexpected)');
+      }
+      
     } else if (finalStatus === 'CANCELLED') {
-      logSuccess('✓ Order was cancelled (likely insufficient stock)');
-      logInfo('Flow: POST /orders → PENDING → Outbox → RabbitMQ → Inventory → CANCELLED');
+      logSuccess('✓ Order was cancelled (compensation flow)');
+      
+      // Determine cancellation reason
+      const reason = orderData.cancellationReason || 'Unknown';
+      logInfo(`Cancellation reason: ${reason}`);
+      
+      if (reason.includes('Inventory') || reason.includes('stock')) {
+        logInfo('Flow: PENDING → Inventory Reserve Failed → CANCELLED');
+        logSuccess('✓ Inventory reserve failed (expected for insufficient stock)');
+      } else if (reason.includes('Payment') || reason.includes('payment')) {
+        logInfo('Flow: PENDING → CONFIRMED → Payment Failed → CANCELLED (+ Inventory Released)');
+        logSuccess('✓ Payment failed (compensation: inventory released)');
+        
+        if (statusHistory.includes('CONFIRMED')) {
+          logSuccess('✓ Inventory was reserved before payment failure');
+          logSuccess('✓ Compensation flow executed (inventory should be released)');
+        }
+      } else {
+        logInfo(`Flow: PENDING → ... → CANCELLED (reason: ${reason})`);
+      }
+    }
+
+    // ============================================================
+    // STEP 8: Verify Inventory State (Optional)
+    // ============================================================
+    logStep(8, 'Verify Inventory State');
+    
+    try {
+      const { status, data } = await request('GET', `/inventory/${productId}`, null, token);
+      
+      if (status === 200) {
+        logSuccess('Inventory state retrieved');
+        logInfo(`Available: ${data.available}`);
+        logInfo(`Reserved: ${data.reserved}`);
+        
+        if (finalStatus === 'PAID') {
+          logInfo('Expected: Reserved stock should be decremented (order fulfilled)');
+        } else if (finalStatus === 'CANCELLED') {
+          if (data.reserved === 0) {
+            logSuccess('✓ No reserved stock (compensation successful or never reserved)');
+          } else {
+            logError(`⚠️  Reserved stock: ${data.reserved} (possible inventory leakage!)`);
+          }
+        }
+      } else {
+        logInfo('Could not retrieve inventory state (endpoint may not exist)');
+      }
+    } catch (error) {
+      logInfo('Could not verify inventory state (endpoint may not exist)');
     }
 
     // ============================================================

@@ -51,6 +51,11 @@ const envSchema = z
       .url("MONGODB_INVENTORY_URI must be a valid URL")
       .optional()
       .or(z.literal("")),
+    MONGODB_PAYMENT_URI: z
+      .string()
+      .url("MONGODB_PAYMENT_URI must be a valid URL")
+      .optional()
+      .or(z.literal("")),
 
     // JWT - Must be at least 32 characters for security
     JWT_SECRET: z
@@ -170,6 +175,7 @@ function loadConfig() {
           order: validatedEnv.MONGODB_ORDER_URI,
           product: validatedEnv.MONGODB_PRODUCT_URI,
           inventory: validatedEnv.MONGODB_INVENTORY_URI,
+          payment: validatedEnv.MONGODB_PAYMENT_URI,
         };
         return (
           uriMap[serviceName] ||

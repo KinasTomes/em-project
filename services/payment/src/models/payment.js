@@ -35,7 +35,6 @@ const paymentSchema = new mongoose.Schema(
 		},
 		transactionId: {
 			type: String,
-			index: true,
 			description: 'Gateway transaction ID (for reconciliation)',
 		},
 		gatewayResponse: {

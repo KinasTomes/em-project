@@ -21,21 +21,21 @@ const logger = require('@ecommerce/logger')
  */
 class OrderStateMachine {
 	constructor(initialState = 'PENDING') {
-		this.fsm = StateMachine.create({
-			initial: initialState,
-			events: [
+		this.fsm = new StateMachine({
+			init: initialState,
+			transitions: [
 				{ name: 'confirm', from: 'PENDING', to: 'CONFIRMED' },
 				{ name: 'pay', from: 'CONFIRMED', to: 'PAID' },
 				{ name: 'cancel', from: ['PENDING', 'CONFIRMED'], to: 'CANCELLED' },
 			],
-			callbacks: {
-				onenterstate: (lifecycle, from, to) => {
+			methods: {
+				onEnterState: (lifecycle) => {
 					logger.debug(
-						{ from, to },
+						{ from: lifecycle.from, to: lifecycle.to },
 						'[OrderStateMachine] State transition'
 					)
 				},
-				oninvalidtransition: (lifecycle, transition, from, to) => {
+				onInvalidTransition: (transition, from, to) => {
 					logger.warn(
 						{ transition, from, to },
 						'[OrderStateMachine] Invalid transition attempted'
@@ -52,7 +52,7 @@ class OrderStateMachine {
 	 * Get current state
 	 */
 	getState() {
-		return this.fsm.current
+		return this.fsm.state
 	}
 
 	/**
@@ -67,7 +67,7 @@ class OrderStateMachine {
 	 */
 	isFinalState() {
 		const finalStates = ['PAID', 'CANCELLED']
-		return finalStates.includes(this.fsm.current)
+		return finalStates.includes(this.fsm.state)
 	}
 
 	/**
@@ -76,11 +76,11 @@ class OrderStateMachine {
 	confirm() {
 		if (!this.can('confirm')) {
 			throw new Error(
-				`Cannot confirm order from state: ${this.fsm.current}`
+				`Cannot confirm order from state: ${this.fsm.state}`
 			)
 		}
 		this.fsm.confirm()
-		return this.fsm.current
+		return this.fsm.state
 	}
 
 	/**
@@ -91,11 +91,11 @@ class OrderStateMachine {
 	pay() {
 		if (!this.can('pay')) {
 			throw new Error(
-				`Cannot pay order from state: ${this.fsm.current}. Order must be CONFIRMED before payment.`
+				`Cannot pay order from state: ${this.fsm.state}. Order must be CONFIRMED before payment.`
 			)
 		}
 		this.fsm.pay()
-		return this.fsm.current
+		return this.fsm.state
 	}
 
 	/**
@@ -105,11 +105,11 @@ class OrderStateMachine {
 	cancel() {
 		if (!this.can('cancel')) {
 			throw new Error(
-				`Cannot cancel order from state: ${this.fsm.current}. Allowed from: PENDING, CONFIRMED`
+				`Cannot cancel order from state: ${this.fsm.state}. Allowed from: PENDING, CONFIRMED`
 			)
 		}
 		this.fsm.cancel()
-		return this.fsm.current
+		return this.fsm.state
 	}
 }
 

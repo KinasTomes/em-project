@@ -99,8 +99,31 @@ async function registerOrderConfirmedConsumer({
 
 	await broker.consume(
 		queueName,
-		async (payload, metadata = {}) => {
+		async (rawPayload, metadata = {}) => {
 			const { eventId, correlationId } = metadata
+			
+			// Filter: Only process ORDER_CONFIRMED events
+			const eventType = rawPayload.type || rawPayload.rawType
+			if (eventType !== 'ORDER_CONFIRMED') {
+				logger.debug(
+					{ eventType, eventId, correlationId },
+					'[Payment] Skipping non-ORDER_CONFIRMED event'
+				)
+				return // Skip other event types
+			}
+			
+			// Validate schema for ORDER_CONFIRMED events only
+			let payload
+			try {
+				payload = OrderConfirmedEventSchema.parse(rawPayload)
+			} catch (validationError) {
+				logger.error(
+					{ error: validationError.message, eventId, rawPayload },
+					'❌ [Payment] ORDER_CONFIRMED schema validation failed'
+				)
+				throw validationError // Will be sent to DLQ by broker
+			}
+			
 			const orderId = payload.orderId
 
 			logger.info(
@@ -206,13 +229,14 @@ async function registerOrderConfirmedConsumer({
 					correlationId,
 				})
 			}
-		},
-		OrderConfirmedEventSchema
+		}
+		// Note: No schema passed to broker.consume() - we validate manually inside handler
+		// This allows us to filter event types before validation
 	)
 
 	logger.info(
 		{ queue: queueName },
-		'✓ [Payment] ORDER_CONFIRMED consumer ready (with idempotency)'
+		'✓ [Payment] ORDER_CONFIRMED consumer ready (with idempotency and event filtering)'
 	)
 }
 

@@ -23,10 +23,7 @@ class App {
 	}
 
 	async connectDB() {
-		await mongoose.connect(config.mongoURI, {
-			useNewUrlParser: true,
-			useUnifiedTopology: true,
-		})
+		await mongoose.connect(config.mongoURI)
 		logger.info({ mongoURI: config.mongoURI }, '✓ [Payment] MongoDB connected')
 	}
 
