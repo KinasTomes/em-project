@@ -153,6 +153,31 @@ describe('Payment Service Tests', () => {
 			expect(result.products).to.have.length(1)
 		})
 
+		it('should validate direct format payload (without data wrapper)', () => {
+			const payload = {
+				orderId: 'order-123',
+				totalPrice: 100.0,
+				currency: 'USD',
+				products: [
+					{
+						productId: 'prod-1',
+						quantity: 2,
+						price: 50.0,
+					},
+				],
+				userId: 'user-456',
+				timestamp: '2025-01-15T10:30:00Z',
+			}
+
+			const result = OrderConfirmedEventSchema.parse(payload)
+
+			expect(result.orderId).to.equal('order-123')
+			expect(result.totalPrice).to.equal(100.0)
+			expect(result.amount).to.equal(100.0)
+			expect(result.currency).to.equal('USD')
+			expect(result.products).to.have.length(1)
+		})
+
 		it('should use default currency when not provided', () => {
 			const payload = {
 				data: {

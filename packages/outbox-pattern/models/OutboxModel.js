@@ -41,11 +41,19 @@ export const outboxSchema = new mongoose.Schema(
 			description: 'Correlation ID for distributed tracing',
 		},
 
-		// Optional destination queue / topic
+		// Optional destination queue / topic (deprecated in favor of routingKey)
 		destination: {
 			type: String,
 			required: false,
-			description: 'Target queue or routing key for publishers',
+			description: 'Target queue (deprecated, use routingKey instead)',
+		},
+
+		// Routing key for topic exchange
+		routingKey: {
+			type: String,
+			required: false,
+			index: true,
+			description: 'Routing key for topic exchange (e.g., order.confirmed, inventory.reserved)',
 		},
 
 		// Processing status
@@ -167,7 +175,8 @@ export async function createOutboxEvent(
 	eventId,
 	correlationId,
 	session,
-	destination = null
+	destination = null,
+	routingKey = null
 ) {
 	const outboxEvent = await OutboxModel.create(
 		[
@@ -177,6 +186,7 @@ export async function createOutboxEvent(
 				eventId,
 				correlationId,
 				destination,
+				routingKey,
 				status: 'PENDING',
 				retries: 0,
 				createdAt: new Date(),

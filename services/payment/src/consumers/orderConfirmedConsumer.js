@@ -16,7 +16,7 @@ async function publishSuccess({ broker, config, payload, result, correlationId }
 		},
 	}
 
-	await broker.publish(config.queues.orderEvents, message, {
+	await broker.publish('payment.succeeded', message, {
 		eventId: uuidv4(),
 		correlationId,
 	})
@@ -24,7 +24,7 @@ async function publishSuccess({ broker, config, payload, result, correlationId }
 	logger.info(
 		{
 			orderId: payload.orderId,
-			queue: config.queues.orderEvents,
+			routingKey: 'payment.succeeded',
 			transactionId: result.transactionId,
 			correlationId,
 		},
@@ -42,39 +42,24 @@ async function publishFailure({ broker, config, payload, result, correlationId }
 			currency: result.currency,
 			reason: result.reason || 'Payment failed',
 			processedAt: result.processedAt,
+			products: payload.products || [],
 		},
 	}
 
-	const orderPublish = broker.publish(config.queues.orderEvents, failurePayload, {
+	// Publish with routing key 'payment.failed' which routes to both Order and Inventory services
+	await broker.publish('payment.failed', failurePayload, {
 		eventId: uuidv4(),
 		correlationId,
 	})
-
-	const inventoryPublish = broker.publish(
-		config.queues.inventoryEvents,
-		{
-			...failurePayload,
-			data: {
-				...failurePayload.data,
-				compensation: true,
-				products: payload.products || [],
-			},
-		},
-		{
-			eventId: uuidv4(),
-			correlationId,
-		}
-	)
-
-	await Promise.all([orderPublish, inventoryPublish])
 
 	logger.warn(
 		{
 			orderId: payload.orderId,
 			transactionId: result.transactionId,
+			routingKey: 'payment.failed',
 			correlationId,
 		},
-		'⚠️ [Payment] Published PAYMENT_FAILED (order + inventory)'
+		'⚠️ [Payment] Published PAYMENT_FAILED to Order and Inventory services'
 	)
 }
 
@@ -95,24 +80,15 @@ async function registerOrderConfirmedConsumer({
 	idempotencyService,
 	paymentService,
 }) {
-	const queueName = config.queues.orderEvents // Consume from order.events queue
+	const queueName = 'q.payment-service' // Payment Service's dedicated queue
+	const routingKeys = ['order.confirmed'] // Only listen to order.confirmed events
 
 	await broker.consume(
 		queueName,
 		async (rawPayload, metadata = {}) => {
 			const { eventId, correlationId } = metadata
 			
-			// Filter: Only process ORDER_CONFIRMED events
-			const eventType = rawPayload.type || rawPayload.rawType
-			if (eventType !== 'ORDER_CONFIRMED') {
-				logger.debug(
-					{ eventType, eventId, correlationId },
-					'[Payment] Skipping non-ORDER_CONFIRMED event'
-				)
-				return // Skip other event types
-			}
-			
-			// Validate schema for ORDER_CONFIRMED events only
+			// Validate schema - no need to filter, queue only receives ORDER_CONFIRMED
 			let payload
 			try {
 				payload = OrderConfirmedEventSchema.parse(rawPayload)
@@ -229,14 +205,14 @@ async function registerOrderConfirmedConsumer({
 					correlationId,
 				})
 			}
-		}
-		// Note: No schema passed to broker.consume() - we validate manually inside handler
-		// This allows us to filter event types before validation
+		},
+		null, // No schema at broker level - we validate in handler
+		routingKeys // Bind queue to exchange with routing keys
 	)
 
 	logger.info(
-		{ queue: queueName },
-		'✓ [Payment] ORDER_CONFIRMED consumer ready (with idempotency and event filtering)'
+		{ queue: queueName, routingKeys },
+		'✓ [Payment] ORDER_CONFIRMED consumer ready (with idempotency)'
 	)
 }
 

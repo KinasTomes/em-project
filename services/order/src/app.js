@@ -119,8 +119,22 @@ class App {
 			this.broker = new Broker()
 			logger.info('✓ [Order] Broker initialized')
 
-			await this.broker.consume('orders', this._handleOrderEvent.bind(this))
-			logger.info('✓ [Order] Event consumer ready')
+			// Consume from Order Service's dedicated queue with routing keys
+			const queueName = 'q.order-service'
+			const routingKeys = [
+				'inventory.reserved',      // INVENTORY_RESERVED
+				'inventory.failed',        // INVENTORY_RESERVE_FAILED
+				'payment.succeeded',       // PAYMENT_SUCCEEDED
+				'payment.failed'           // PAYMENT_FAILED
+			]
+
+			await this.broker.consume(
+				queueName,
+				this._handleOrderEvent.bind(this),
+				null, // No schema validation at broker level
+				routingKeys
+			)
+			logger.info({ queue: queueName, routingKeys }, '✓ [Order] Event consumer ready')
 		} catch (error) {
 			logger.error(
 				{ error: error.message },

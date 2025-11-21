@@ -13,6 +13,7 @@ export class Broker {
     this.redisClient = null;
     this.isConnected = false;
     this.consumers = []; // Track registered consumers for re-registration
+    this.exchangeName = process.env.EXCHANGE_NAME || 'ecommerce.events';
     
     logger.info('Broker initialized (connections will be established on first use)');
   }
@@ -61,8 +62,13 @@ export class Broker {
           }
         });
 
+        // Declare topic exchange for event routing
+        await this.channel.assertExchange(this.exchangeName, 'topic', {
+          durable: true
+        });
+
         this.isConnected = true;
-        logger.info('✓ RabbitMQ connected successfully');
+        logger.info({ exchange: this.exchangeName }, '✓ RabbitMQ connected and exchange declared');
         return;
 
       } catch (error) {
@@ -115,44 +121,39 @@ export class Broker {
   }
 
   /**
-   * Gửi message với retry logic và tracing
+   * Publish message to topic exchange with routing key
+   * @param {string} routingKey - Routing key for message routing (e.g., 'order.confirmed')
+   * @param {object} data - Message payload
+   * @param {object} options - Publishing options
+   * @param {string} options.eventId - Unique event ID
+   * @param {string} options.correlationId - Correlation ID for tracing
    */
-  async publish(queue, data, { eventId, correlationId }) {
+  async publish(routingKey, data, { eventId, correlationId }) {
     await this._ensureRabbitMQConnection();
 
-    const span = tracer.startSpan(`publish-${queue}`);
+    const span = tracer.startSpan(`publish-${routingKey}`);
     
     try {
       // Lấy active context và inject vào headers
       const activeContext = trace.setSpan(context.active(), span);
       const messageHeaders = {
         'x-correlation-id': correlationId || span.spanContext().traceId,
-        'x-event-id': eventId
+        'x-event-id': eventId,
+        'x-routing-key': routingKey
       };
 
       // Inject OpenTelemetry context vào headers
       propagation.inject(activeContext, messageHeaders);
 
-      // Assert queue exists
-      await this.channel.assertQueue(queue, { 
-        durable: true,
-        arguments: {
-          'x-dead-letter-exchange': '',
-          'x-dead-letter-routing-key': `${queue}.dlq`
-        }
-      });
-
-      // Assert DLQ exists
-      await this.channel.assertQueue(`${queue}.dlq`, { durable: true });
-
-      // Publish message với retry logic
+      // Publish message to exchange với retry logic
       const maxRetries = 3;
       let lastError;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const published = this.channel.sendToQueue(
-            queue,
+          const published = this.channel.publish(
+            this.exchangeName,
+            routingKey,
             Buffer.from(JSON.stringify(data)),
             {
               persistent: true,
@@ -170,12 +171,14 @@ export class Broker {
           logger.info({ 
             eventId, 
             correlationId, 
-            queue,
+            routingKey,
+            exchange: this.exchangeName,
             traceId: span.spanContext().traceId
-          }, '✓ Message published successfully');
+          }, '✓ Message published to exchange');
 
           span.setAttribute('event.id', eventId);
-          span.setAttribute('queue.name', queue);
+          span.setAttribute('routing.key', routingKey);
+          span.setAttribute('exchange.name', this.exchangeName);
           span.setStatus({ code: SpanStatusCode.OK });
           
           return;
@@ -200,7 +203,7 @@ export class Broker {
       logger.error({ 
         error: error.message, 
         eventId, 
-        queue 
+        routingKey 
       }, '❌ Failed to publish message');
 
       span.recordException(error);
@@ -221,9 +224,9 @@ export class Broker {
     
     logger.info({ count: this.consumers.length }, '🔄 Re-registering consumers...');
     
-    for (const { queue, handler, schema } of this.consumers) {
+    for (const { queue, handler, schema, routingKeys } of this.consumers) {
       try {
-        await this._setupConsumer(queue, handler, schema);
+        await this._setupConsumer(queue, handler, schema, routingKeys);
         logger.info({ queue }, '✓ Consumer re-registered');
       } catch (error) {
         logger.error({ queue, error: error.message }, '❌ Failed to re-register consumer');
@@ -232,32 +235,35 @@ export class Broker {
   }
 
   /**
-   * Consume message với 4-layer processing:
-   * 1. Tracing (Extract context)
-   * 2. Idempotency (Redis check)
-   * 3. Schema Validation (Zod)
-   * 4. Handler Execution
+   * Consume messages from queue bound to exchange with routing keys
+   * @param {string} queue - Queue name (consumer's mailbox)
+   * @param {function} handler - Message handler function
+   * @param {object} schema - Optional Zod schema for validation
+   * @param {string|string[]} routingKeys - Routing key pattern(s) to bind (e.g., '*.reserved', ['order.confirmed', 'order.cancelled'])
    */
-  async consume(queue, handler, schema) {
+  async consume(queue, handler, schema, routingKeys = []) {
     await this._ensureRabbitMQConnection();
     await this._ensureRedisConnection();
+    
+    // Normalize routingKeys to array
+    const normalizedRoutingKeys = Array.isArray(routingKeys) ? routingKeys : [routingKeys];
     
     // Store consumer info for re-registration after reconnect
     const existingIndex = this.consumers.findIndex(c => c.queue === queue);
     if (existingIndex >= 0) {
-      this.consumers[existingIndex] = { queue, handler, schema };
+      this.consumers[existingIndex] = { queue, handler, schema, routingKeys: normalizedRoutingKeys };
     } else {
-      this.consumers.push({ queue, handler, schema });
+      this.consumers.push({ queue, handler, schema, routingKeys: normalizedRoutingKeys });
     }
     
-    await this._setupConsumer(queue, handler, schema);
+    await this._setupConsumer(queue, handler, schema, normalizedRoutingKeys);
   }
 
   /**
    * Setup consumer (internal, separated for re-registration)
    * @private
    */
-  async _setupConsumer(queue, handler, schema) {
+  async _setupConsumer(queue, handler, schema, routingKeys = []) {
 
     if (!this.channel) {
       throw new Error('Channel not available');
@@ -275,10 +281,18 @@ export class Broker {
     // Assert DLQ exists
     await this.channel.assertQueue(`${queue}.dlq`, { durable: true });
 
+    // Bind queue to exchange with routing keys
+    if (routingKeys && routingKeys.length > 0) {
+      for (const routingKey of routingKeys) {
+        await this.channel.bindQueue(queue, this.exchangeName, routingKey);
+        logger.info({ queue, exchange: this.exchangeName, routingKey }, '✓ Queue bound to exchange');
+      }
+    }
+
     // Set prefetch to 1 (process one message at a time)
     await this.channel.prefetch(1);
 
-    logger.info({ queue }, '✓ Consumer registered, waiting for messages...');
+    logger.info({ queue, routingKeys }, '✓ Consumer registered, waiting for messages...');
 
     await this.channel.consume(queue, async (msg) => {
       if (!msg) return;

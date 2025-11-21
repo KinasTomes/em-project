@@ -212,7 +212,7 @@ export class OutboxProcessor {
 			eventId,
 			correlationId,
 			retries,
-			destination,
+			routingKey,
 		} = outboxEvent
 
 		const logContext = {
@@ -221,22 +221,26 @@ export class OutboxProcessor {
 			correlationId,
 			serviceName: this.serviceName,
 			retries,
-			destination,
+			routingKey,
 		}
 
 		try {
 			logger.info(logContext, '📤 Processing outbox event')
 
-			// Publish to RabbitMQ using MessageBroker
-			const targetQueue = destination || eventType
-			await this.broker.publish(targetQueue, payload, {
+			// Publish to RabbitMQ using MessageBroker with routing key
+			// Routing key is now required for topic exchange routing
+			if (!routingKey) {
+				throw new Error(`Routing key is required for event ${eventType}`)
+			}
+
+			await this.broker.publish(routingKey, payload, {
 				eventId,
 				correlationId,
 			})
 
 			logger.info(
-				{ ...logContext, targetQueue },
-				'✓ Event published to RabbitMQ'
+				{ ...logContext, routingKey },
+				'✓ Event published to exchange with routing key'
 			)
 
 			// Mark as PUBLISHED

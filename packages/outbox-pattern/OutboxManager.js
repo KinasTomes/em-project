@@ -60,6 +60,8 @@ export class OutboxManager {
 	 * @param {mongoose.ClientSession} options.session - MongoDB session
 	 * @param {string} [options.eventId] - Optional custom event ID
 	 * @param {string} [options.correlationId] - Optional custom correlation ID
+	 * @param {string} [options.destination] - Optional destination (deprecated, use routingKey)
+	 * @param {string} [options.routingKey] - Routing key for topic exchange
 	 * @returns {Promise<object>} Created outbox event
 	 */
 	async createEvent({
@@ -69,6 +71,7 @@ export class OutboxManager {
 		eventId,
 		correlationId,
 		destination,
+		routingKey,
 	}) {
 		// Auto-generate IDs if not provided
 		const finalEventId = eventId || uuid()
@@ -80,6 +83,7 @@ export class OutboxManager {
 				eventId: finalEventId,
 				correlationId: finalCorrelationId,
 				serviceName: this.serviceName,
+				routingKey,
 			},
 			'📝 Creating outbox event'
 		)
@@ -91,7 +95,8 @@ export class OutboxManager {
 			finalEventId,
 			finalCorrelationId,
 			session,
-			destination
+			destination,
+			routingKey
 		)
 
 		logger.debug(
@@ -99,6 +104,7 @@ export class OutboxManager {
 				eventType,
 				eventId: finalEventId,
 				serviceName: this.serviceName,
+				routingKey,
 			},
 			'✓ Outbox event created'
 		)

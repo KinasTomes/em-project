@@ -47,7 +47,7 @@ async function handleReserveRequest(message, metadata = {}) {
 
 		if (result.success) {
 			await broker.publish(
-				'orders',
+				'inventory.reserved',
 				{
 					type: 'INVENTORY_RESERVED',
 					data: {
@@ -64,12 +64,12 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.info(
-				{ orderId, productId, quantity },
-				'✓ [Inventory] RESERVED - published to orders queue'
+				{ orderId, productId, quantity, routingKey: 'inventory.reserved' },
+				'✓ [Inventory] RESERVED - published with routing key'
 			)
 		} else {
 			await broker.publish(
-				'orders',
+				'inventory.failed',
 				{
 					type: 'INVENTORY_RESERVE_FAILED',
 					data: {
@@ -86,7 +86,7 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.warn(
-				{ orderId, productId, reason: result.message },
+				{ orderId, productId, reason: result.message, routingKey: 'inventory.failed' },
 				'✗ [Inventory] RESERVE_FAILED - insufficient stock'
 			)
 		}
@@ -97,7 +97,7 @@ async function handleReserveRequest(message, metadata = {}) {
 		)
 
 		await broker.publish(
-			'orders',
+			'inventory.failed',
 			{
 				type: 'INVENTORY_RESERVE_FAILED',
 				data: {
@@ -133,7 +133,7 @@ async function handleReleaseRequest(message, metadata = {}) {
 		await inventoryService.releaseReserved(productId, quantity)
 
 		await broker.publish(
-			'orders',
+			'inventory.released',
 			{
 				type: 'INVENTORY_RELEASED',
 				data: {
@@ -150,8 +150,8 @@ async function handleReleaseRequest(message, metadata = {}) {
 		)
 
 		logger.info(
-			{ orderId, productId, quantity },
-			'✓ [Inventory] RELEASED - published to orders queue'
+			{ orderId, productId, quantity, routingKey: 'inventory.released' },
+			'✓ [Inventory] RELEASED - published with routing key'
 		)
 	} catch (error) {
 		logger.error(
@@ -443,9 +443,17 @@ async function startServer() {
 		}
 
 		// Single consumer that routes and validates all event types
-		await broker.consume('inventory', routeInventoryEvent)
+		const queueName = 'q.inventory-service'
+		const routingKeys = [
+			'order.created',    // INVENTORY_RESERVE_REQUEST
+			'order.release',    // INVENTORY_RELEASE_REQUEST
+			'payment.failed'    // PAYMENT_FAILED (for compensation)
+		]
+		
+		await broker.consume(queueName, routeInventoryEvent, null, routingKeys)
 		logger.info(
-			'✓ [Inventory] Consumer ready on "inventory" queue (handles: RESERVE, RELEASE, PRODUCT_CREATED, PRODUCT_DELETED, PAYMENT_FAILED)'
+			{ queue: queueName, routingKeys },
+			'✓ [Inventory] Consumer ready (handles: RESERVE, RELEASE, PAYMENT_FAILED)'
 		)
 	} catch (error) {
 		logger.error({ error: error.message }, 'Failed to start server')

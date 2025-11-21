@@ -15,10 +15,6 @@ const config = {
 	serviceName: 'payment-service',
 	port: parseNumber(process.env.PAYMENT_PORT, 3006),
 	mongoURI: baseConfig.getMongoURI('payment'),
-	queues: {
-		orderEvents: process.env.ORDER_EVENTS_QUEUE || 'orders', // Consume ORDER_CONFIRMED from here
-		inventoryEvents: process.env.INVENTORY_EVENTS_QUEUE || 'inventory',
-	},
 	payment: {
 		successRate: clampRate(process.env.PAYMENT_SUCCESS_RATE, 0.9),
 	},

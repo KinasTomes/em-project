@@ -118,7 +118,7 @@ class OrderService {
 					},
 					session,
 					correlationId: orderId,
-					destination: 'inventory',
+					routingKey: 'order.created',
 				})
 			}
 
@@ -244,6 +244,7 @@ class OrderService {
 								},
 								session,
 								correlationId,
+								routingKey: 'order.confirmed',
 							})
 						} catch (error) {
 							logger.error(
@@ -342,36 +343,37 @@ class OrderService {
 							'[Order] Releasing reserved inventory (compensation for partial failure)'
 						)
 
-						for (const product of reservedProducts) {
-							await this.outboxManager.createEvent({
-								eventType: 'INVENTORY_RELEASE_REQUEST',
-								payload: {
-									type: 'RELEASE',
-									data: {
-										orderId: order._id,
-										productId: product._id.toString(),
-										quantity: product.quantity,
-										reason: 'INVENTORY_RESERVE_FAILED_PARTIAL',
-									},
-									timestamp: new Date().toISOString(),
+					for (const product of reservedProducts) {
+						await this.outboxManager.createEvent({
+							eventType: 'INVENTORY_RELEASE_REQUEST',
+							payload: {
+								type: 'RELEASE',
+								data: {
+									orderId: order._id,
+									productId: product._id.toString(),
+									quantity: product.quantity,
+									reason: 'INVENTORY_RESERVE_FAILED_PARTIAL',
 								},
-								session,
-								correlationId,
-								destination: 'inventory',
-							})
-						}
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+							routingKey: 'order.release',
+						})
+					}
 					}
 
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_CANCELLED',
-						payload: {
-							orderId: order._id,
-							reason: order.cancellationReason,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-					})
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: order.cancellationReason,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.cancelled',
+				})
 				} catch (error) {
 					logger.error(
 						{
@@ -460,18 +462,19 @@ class OrderService {
 						'[Order] Order status updated to PAID (payment succeeded)'
 					)
 
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_PAID',
-						payload: {
-							orderId: order._id,
-							transactionId: payload.transactionId,
-							amount: payload.amount,
-							currency: payload.currency,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-					})
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_PAID',
+					payload: {
+						orderId: order._id,
+						transactionId: payload.transactionId,
+						amount: payload.amount,
+						currency: payload.currency,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.paid',
+				})
 				} catch (error) {
 					logger.error(
 						{
@@ -564,38 +567,39 @@ class OrderService {
 						'[Order] Order status updated to CANCELLED (payment failed)'
 					)
 
-					// Release reserved inventory (compensation)
-					for (const product of order.products) {
-						if (product.reserved) {
-							await this.outboxManager.createEvent({
-								eventType: 'INVENTORY_RELEASE_REQUEST',
-								payload: {
-									type: 'RELEASE',
-									data: {
-										orderId: order._id,
-										productId: product._id.toString(),
-										quantity: product.quantity,
-										reason: 'PAYMENT_FAILED',
-									},
-									timestamp: new Date().toISOString(),
+				// Release reserved inventory (compensation)
+				for (const product of order.products) {
+					if (product.reserved) {
+						await this.outboxManager.createEvent({
+							eventType: 'INVENTORY_RELEASE_REQUEST',
+							payload: {
+								type: 'RELEASE',
+								data: {
+									orderId: order._id,
+									productId: product._id.toString(),
+									quantity: product.quantity,
+									reason: 'PAYMENT_FAILED',
 								},
-								session,
-								correlationId,
-								destination: 'inventory',
-							})
-						}
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+							routingKey: 'order.release',
+						})
 					}
+				}
 
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_CANCELLED',
-						payload: {
-							orderId: order._id,
-							reason: order.cancellationReason,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-					})
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: order.cancellationReason,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.cancelled',
+				})
 				} catch (error) {
 					logger.error(
 						{
