@@ -34,6 +34,41 @@ const OrderCreatedSchema = z
 	})
 
 /**
+ * Schema for ORDER_CANCELLED event
+ * Inventory listens to this event to release reserved stock
+ */
+const OrderCancelledSchema = z
+	.object({
+		type: z.string().optional(),
+		data: z
+			.object({
+				orderId: z.string().min(1, 'orderId is required'),
+				reason: z.string().optional(),
+				products: z
+					.array(
+						z.object({
+							productId: z.string().min(1, 'productId is required'),
+							quantity: z.number().int().positive('quantity must be positive'),
+						})
+					)
+					.optional(),
+			})
+			.passthrough(),
+		timestamp: z.string().optional(),
+	})
+	.passthrough()
+	.transform((message) => {
+		// Normalize to consistent format
+		const data = message.data || message
+		return {
+			orderId: data.orderId,
+			products: data.products || [],
+			reason: data.reason,
+			rawType: message.type || 'ORDER_CANCELLED',
+		}
+	})
+
+/**
  * Schema for PRODUCT_CREATED event
  */
 const ProductCreatedSchema = z
