@@ -12,6 +12,24 @@ importers:
         specifier: ^10.8.2
         version: 10.8.2
 
+  packages/circuit-breaker:
+    dependencies:
+      '@ecommerce/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@opentelemetry/api':
+        specifier: ^1.7.0
+        version: 1.9.0
+      axios:
+        specifier: ^1.6.0
+        version: 1.13.2
+      axios-retry:
+        specifier: ^4.0.0
+        version: 4.5.0(axios@1.13.2)
+      opossum:
+        specifier: ^8.1.0
+        version: 8.5.0
+
   packages/config:
     dependencies:
       dotenv:
@@ -187,6 +205,9 @@ importers:
 
   services/order:
     dependencies:
+      '@ecommerce/circuit-breaker':
+        specifier: workspace:*
+        version: link:../../packages/circuit-breaker
       '@ecommerce/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -1002,6 +1023,11 @@ packages:
     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
     engines: {node: '>=8.0.0'}
 
+  axios-retry@4.5.0:
+    resolution: {integrity: sha512-aR99oXhpEDGo0UuAlYcn2iGRds30k366Zfa05XWScR9QaQD4JYiP3/1Qt1u7YlefUOK+cn0CcwoL1oefavQUlQ==}
+    peerDependencies:
+      axios: 0.x || 1.x
+
   axios@1.13.2:
     resolution: {integrity: sha512-VPk9ebNqPcy5lRGuSlKx752IlDatOjT9paPlm8A7yOuW2Fbvp4X3JznJtT4f0GzGLLiWE9W8onz51SqLYwzGaA==}
 
@@ -1476,6 +1502,10 @@ packages:
     resolution: {integrity: sha512-YWnfyRwxL/+SsrWYfOpUtz5b3YD+nyfkHvjbcanzk8zgyO4ASD67uVMRt8k5bM4lLMDnXfriRhOpemw+NfT1eA==}
     engines: {node: '>=8'}
 
+  is-retry-allowed@2.2.0:
+    resolution: {integrity: sha512-XVm7LOeLpTW4jV19QSH38vkswxoLud8sQ57YwJVTPWdiaI9I8keEhGFpBlslyVsgdQy4Opg8QOLb8YRgsyZiQg==}
+    engines: {node: '>=10'}
+
   is-stream@2.0.1:
     resolution: {integrity: sha512-hFoiJiTl63nn+kstHGBtewWSKnQLpyb155KHheA1l39uvtO9nWIop1p3udqPcUd/xbF1VLMO4n7OI6p7RbngDg==}
     engines: {node: '>=8'}
@@ -1735,6 +1765,10 @@ packages:
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
+
+  opossum@8.5.0:
+    resolution: {integrity: sha512-LZNvs+p9/ZbG4oN6unnjh4hTxkB0dyHKI2p7azVt8w+//GKDpfHss6WR7KebbpzGEssYwtSd8Mvwxqcmxg10NA==}
+    engines: {node: ^24 || ^22 || ^21 || ^20 || ^18 || ^16}
 
   p-limit@3.1.0:
     resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
@@ -3034,6 +3068,11 @@ snapshots:
 
   atomic-sleep@1.0.0: {}
 
+  axios-retry@4.5.0(axios@1.13.2):
+    dependencies:
+      axios: 1.13.2
+      is-retry-allowed: 2.2.0
+
   axios@1.13.2:
     dependencies:
       follow-redirects: 1.15.11
@@ -3533,6 +3572,8 @@ snapshots:
 
   is-plain-obj@2.1.0: {}
 
+  is-retry-allowed@2.2.0: {}
+
   is-stream@2.0.1: {}
 
   is-unicode-supported@0.1.0: {}
@@ -3787,6 +3828,8 @@ snapshots:
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
+
+  opossum@8.5.0: {}
 
   p-limit@3.1.0:
     dependencies:

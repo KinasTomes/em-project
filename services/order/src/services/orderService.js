@@ -1,37 +1,28 @@
-﻿const axios = require('axios')
-const mongoose = require('mongoose')
+﻿const mongoose = require('mongoose')
 const Order = require('../models/order')
 const logger = require('@ecommerce/logger')
 const { createOrderStateMachine } = require('./orderStateMachine')
+const { productClient } = require('../clients/productClient')
 
 class OrderService {
 	constructor(outboxManager) {
 		this.outboxManager = outboxManager
-		this.productServiceUrl =
-			process.env.PRODUCT_SERVICE_URL || 'http://product:3004'
 	}
 
 	/**
 	 * Fetch product details from the Product service and validate the IDs.
+	 * Uses circuit breaker for resilient HTTP calls.
 	 */
 	async validateProducts(productIds, token) {
 		try {
 			const authHeader =
 				token && token.startsWith('Bearer ') ? token : `Bearer ${token}`
 
-			const response = await axios.get(
-				`${this.productServiceUrl}/api/products`,
-				{
-					headers: { Authorization: authHeader },
-					timeout: 5000,
-				}
-			)
+			// Use resilient client with circuit breaker
+			const allProducts = await productClient.get('/api/products', {
+				headers: { Authorization: authHeader },
+			})
 
-			if (response.status !== 200) {
-				throw new Error(`Product Service returned status ${response.status}`)
-			}
-
-			const allProducts = response.data
 			const validProducts = allProducts.filter((product) =>
 				productIds.includes(product._id.toString())
 			)
@@ -44,8 +35,30 @@ class OrderService {
 
 			return validProducts
 		} catch (error) {
+			// Handle circuit breaker specific errors
+			if (error.code === 'CIRCUIT_OPEN') {
+				logger.error(
+					{ productIds, circuitState: 'OPEN' },
+					'Product Service is unavailable (circuit breaker open)'
+				)
+				throw new Error(
+					'Product Service is temporarily unavailable. Please try again later.'
+				)
+			}
+
+			if (error.code === 'TIMEOUT') {
+				logger.error(
+					{ productIds, timeout: 3000 },
+					'Product Service request timed out'
+				)
+				throw new Error(
+					'Product Service is taking too long to respond. Please try again.'
+				)
+			}
+
+			// Log and re-throw other errors
 			logger.error(
-				{ error: error.message, productIds },
+				{ error: error.message, productIds, code: error.code },
 				'Failed to validate products'
 			)
 			throw error

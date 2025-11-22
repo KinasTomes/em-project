@@ -48,7 +48,13 @@ class App {
 		// Initialize orderService as instance variable for use in event handlers
 		this.orderService = new OrderService(this.outboxManager)
 		const orderController = new OrderController(this.orderService)
+		
+		// Register routes
 		this.app.use('/api/orders', orderRoutes(orderController))
+		
+		// Health check routes (includes circuit breaker monitoring)
+		const healthRoutes = require('./routes/healthRoutes')
+		this.app.use('/api', healthRoutes)
 	}
 
 	async connectDB() {
@@ -164,6 +170,11 @@ class App {
 			await this.outboxManager.stopProcessor()
 			logger.info('✓ [Order] Outbox processor stopped')
 		}
+
+		// Shutdown circuit breaker
+		const { productClient } = require('./clients/productClient')
+		productClient.shutdown()
+		logger.info('✓ [Order] Circuit breaker shutdown')
 
 		await this.disconnectDB()
 

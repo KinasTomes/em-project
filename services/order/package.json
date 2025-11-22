@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ecommerce/circuit-breaker": "workspace:*",
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
