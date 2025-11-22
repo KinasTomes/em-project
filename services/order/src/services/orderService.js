@@ -63,9 +63,9 @@ class OrderService {
 		const normalizedQuantities =
 			Array.isArray(quantities) && quantities.length === productIds.length
 				? quantities.map((quantity) => {
-						const parsed = Number(quantity)
-						return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
-				  })
+					const parsed = Number(quantity)
+					return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+				})
 				: productIds.map(() => 1)
 
 		const products = await this.validateProducts(productIds, token)
@@ -104,23 +104,23 @@ class OrderService {
 			}
 
 			const timestamp = new Date().toISOString()
-			for (const product of order.products) {
-				await this.outboxManager.createEvent({
-					eventType: 'INVENTORY_RESERVE_REQUEST',
-					payload: {
-						type: 'RESERVE',
-						data: {
-							orderId,
+			await this.outboxManager.createEvent({
+				eventType: 'INVENTORY_RESERVE_REQUEST',
+				payload: {
+					type: 'RESERVE',
+					data: {
+						orderId,
+						products: order.products.map((product) => ({
 							productId: product._id.toString(),
 							quantity: product.quantity,
-						},
-						timestamp,
+						})),
 					},
-					session,
-					correlationId: orderId,
-					routingKey: 'order.created',
-				})
-			}
+					timestamp,
+				},
+				session,
+				correlationId: orderId,
+				routingKey: 'order.created',
+			})
 
 			await session.commitTransaction()
 			logger.info(
@@ -194,7 +194,7 @@ class OrderService {
 				},
 				'[Order] Order already in final state, need to release this reserved inventory'
 			)
-			
+
 			// ✅ FIX: If order is already CANCELLED, release this inventory immediately
 			// This handles race condition where INVENTORY_RESERVE_FAILED arrives before INVENTORY_RESERVED
 			if (order.status === 'CANCELLED') {
@@ -217,7 +217,7 @@ class OrderService {
 							correlationId,
 							routingKey: 'order.release',
 						})
-						
+
 						logger.info(
 							{
 								orderId: order._id,
@@ -232,76 +232,65 @@ class OrderService {
 					session.endSession()
 				}
 			}
-			
+
 			return
 		}
 
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				let changed = false
-				order.products = order.products.map((product) => {
-					if (product._id.toString() === payload.productId) {
-						changed = true
-						return { ...product.toObject(), reserved: true }
-					}
-					return product
+				// Mark all products as reserved
+				order.products.forEach((product) => {
+					product.reserved = true
 				})
 
-				if (changed) {
-					const allReserved = order.products.every(
-						(product) => product.reserved === true
+				// Use state machine to validate transition: PENDING → CONFIRMED
+				try {
+					fsm.confirm()
+					order.status = fsm.getState()
+
+					logger.info(
+						{
+							orderId: order._id,
+							oldStatus: 'PENDING',
+							newStatus: order.status,
+							correlationId,
+						},
+						'[Order] Order status updated to CONFIRMED (all inventory reserved)'
 					)
-					if (allReserved) {
-						// Use state machine to validate transition: PENDING → CONFIRMED
-						try {
-							fsm.confirm()
-							order.status = fsm.getState()
-							
-							logger.info(
-								{
-									orderId: order._id,
-									oldStatus: 'PENDING',
-									newStatus: order.status,
-									correlationId,
-								},
-								'[Order] Order status updated to CONFIRMED (all inventory reserved)'
-							)
 
-							await this.outboxManager.createEvent({
-								eventType: 'ORDER_CONFIRMED',
-								payload: {
-									orderId: order._id,
-									totalPrice: order.totalPrice,
-									currency: 'USD',
-									products: order.products.map((p) => ({
-										productId: p._id.toString(),
-										quantity: p.quantity,
-										price: p.price,
-									})),
-									userId: order.user,
-									timestamp: new Date().toISOString(),
-								},
-								session,
-								correlationId,
-								routingKey: 'order.confirmed',
-							})
-						} catch (error) {
-							logger.error(
-								{
-									error: error.message,
-									orderId: payload.orderId,
-									currentStatus: order.status,
-									correlationId,
-								},
-								'[Order] Invalid state transition for INVENTORY_RESERVED'
-							)
-							throw error
-						}
-					}
-
-					await order.save({ session })
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_CONFIRMED',
+						payload: {
+							orderId: order._id,
+							totalPrice: order.totalPrice,
+							currency: 'USD',
+							products: order.products.map((p) => ({
+								productId: p._id.toString(),
+								quantity: p.quantity,
+								price: p.price,
+							})),
+							userId: order.user,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+						routingKey: 'order.confirmed',
+					})
+				} catch (error) {
+					logger.error(
+						{
+							error: error.message,
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Invalid state transition for INVENTORY_RESERVED'
+					)
+					throw error
 				}
+
+				await order.save({ session })
 			})
 		} finally {
 			session.endSession()
@@ -369,32 +358,10 @@ class OrderService {
 				try {
 					fsm.cancel()
 					order.status = fsm.getState()
-					
-					// ✅ FIX: Build detailed cancellation reason with product info
-					const failedProductId = payload.productId || 'unknown'
+
 					const failureReason = payload.reason || payload.message || 'Inventory reserve failed'
-					const detailedReason = `Product ${failedProductId}: ${failureReason}`
-					
-					// If there are already reserved products, mention partial failure
-					const reservedProducts = order.products.filter(p => p.reserved === true)
-					if (reservedProducts.length > 0) {
-						order.cancellationReason = `Partial failure - ${detailedReason} (${reservedProducts.length} products were reserved and will be released)`
-					} else {
-						order.cancellationReason = detailedReason
-					}
-					
-					logger.info(
-						{
-							orderId: order._id,
-							cancellationReasonBeforeSave: order.cancellationReason,
-							failedProductId,
-							failureReason,
-							reservedCount: reservedProducts.length,
-							correlationId,
-						},
-						'[Order] About to save order with cancellation reason'
-					)
-					
+					order.cancellationReason = failureReason
+
 					await order.save({ session })
 
 					logger.info(
@@ -403,60 +370,24 @@ class OrderService {
 							oldStatus: 'PENDING',
 							newStatus: order.status,
 							cancellationReason: order.cancellationReason,
-							cancellationReasonAfterSave: order.cancellationReason,
-							failedProductId,
-							reservedCount: reservedProducts.length,
 							correlationId,
 						},
 						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
 					)
 
-					// ✅ FIX: Release reserved inventory (compensation for partial failure)
-					if (reservedProducts.length > 0) {
-						logger.info(
-							{ 
-								orderId: order._id, 
-								reservedCount: reservedProducts.length,
-								products: reservedProducts.map(p => ({
-									productId: p._id.toString(),
-									quantity: p.quantity
-								})),
-								correlationId 
-							},
-							'[Order] Releasing reserved inventory (compensation for partial failure)'
-						)
+					// No need to release inventory as the transaction in Inventory Service was rolled back
 
-					for (const product of reservedProducts) {
-						await this.outboxManager.createEvent({
-							eventType: 'INVENTORY_RELEASE_REQUEST',
-							payload: {
-								type: 'RELEASE',
-								data: {
-									orderId: order._id,
-									productId: product._id.toString(),
-									quantity: product.quantity,
-									reason: 'INVENTORY_RESERVE_FAILED_PARTIAL',
-								},
-								timestamp: new Date().toISOString(),
-							},
-							session,
-							correlationId,
-							routingKey: 'order.release',
-						})
-					}
-					}
-
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_CANCELLED',
-					payload: {
-						orderId: order._id,
-						reason: order.cancellationReason,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-					routingKey: 'order.cancelled',
-				})
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_CANCELLED',
+						payload: {
+							orderId: order._id,
+							reason: order.cancellationReason,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+						routingKey: 'order.cancelled',
+					})
 				} catch (error) {
 					logger.error(
 						{
@@ -520,7 +451,7 @@ class OrderService {
 					correlationId,
 				},
 				'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
-					order.status
+				order.status
 			)
 			return
 		}
@@ -545,19 +476,19 @@ class OrderService {
 						'[Order] Order status updated to PAID (payment succeeded)'
 					)
 
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_PAID',
-					payload: {
-						orderId: order._id,
-						transactionId: payload.transactionId,
-						amount: payload.amount,
-						currency: payload.currency,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-					routingKey: 'order.paid',
-				})
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_PAID',
+						payload: {
+							orderId: order._id,
+							transactionId: payload.transactionId,
+							amount: payload.amount,
+							currency: payload.currency,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+						routingKey: 'order.paid',
+					})
 				} catch (error) {
 					logger.error(
 						{
@@ -623,7 +554,7 @@ class OrderService {
 					correlationId,
 				},
 				'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
-					order.status
+				order.status
 			)
 			return
 		}
@@ -650,39 +581,39 @@ class OrderService {
 						'[Order] Order status updated to CANCELLED (payment failed)'
 					)
 
-				// Release reserved inventory (compensation)
-				for (const product of order.products) {
-					if (product.reserved) {
-						await this.outboxManager.createEvent({
-							eventType: 'INVENTORY_RELEASE_REQUEST',
-							payload: {
-								type: 'RELEASE',
-								data: {
-									orderId: order._id,
-									productId: product._id.toString(),
-									quantity: product.quantity,
-									reason: 'PAYMENT_FAILED',
+					// Release reserved inventory (compensation)
+					for (const product of order.products) {
+						if (product.reserved) {
+							await this.outboxManager.createEvent({
+								eventType: 'INVENTORY_RELEASE_REQUEST',
+								payload: {
+									type: 'RELEASE',
+									data: {
+										orderId: order._id,
+										productId: product._id.toString(),
+										quantity: product.quantity,
+										reason: 'PAYMENT_FAILED',
+									},
+									timestamp: new Date().toISOString(),
 								},
-								timestamp: new Date().toISOString(),
-							},
-							session,
-							correlationId,
-							routingKey: 'order.release',
-						})
+								session,
+								correlationId,
+								routingKey: 'order.release',
+							})
+						}
 					}
-				}
 
-				await this.outboxManager.createEvent({
-					eventType: 'ORDER_CANCELLED',
-					payload: {
-						orderId: order._id,
-						reason: order.cancellationReason,
-						timestamp: new Date().toISOString(),
-					},
-					session,
-					correlationId,
-					routingKey: 'order.cancelled',
-				})
+					await this.outboxManager.createEvent({
+						eventType: 'ORDER_CANCELLED',
+						payload: {
+							orderId: order._id,
+							reason: order.cancellationReason,
+							timestamp: new Date().toISOString(),
+						},
+						session,
+						correlationId,
+						routingKey: 'order.cancelled',
+					})
 				} catch (error) {
 					logger.error(
 						{

@@ -9,8 +9,14 @@ const ReserveRequestSchema = z
 		data: z
 			.object({
 				orderId: z.string().min(1, 'orderId is required'),
-				productId: z.string().min(1, 'productId is required'),
-				quantity: z.number().int().positive('quantity must be positive'),
+				products: z
+					.array(
+						z.object({
+							productId: z.string().min(1, 'productId is required'),
+							quantity: z.number().int().positive('quantity must be positive'),
+						})
+					)
+					.min(1, 'At least one product is required'),
 			})
 			.passthrough(),
 		timestamp: z.string().optional(),
@@ -21,8 +27,7 @@ const ReserveRequestSchema = z
 		const data = message.data || message
 		return {
 			orderId: data.orderId,
-			productId: data.productId,
-			quantity: data.quantity,
+			products: data.products,
 			rawType: message.type || 'RESERVE',
 		}
 	})
@@ -79,8 +84,8 @@ const ProductCreatedSchema = z
 			typeof data.available !== 'undefined'
 				? data.available
 				: typeof data.initialStock !== 'undefined'
-				? data.initialStock
-				: 0
+					? data.initialStock
+					: 0
 
 		return {
 			productId: data.productId,

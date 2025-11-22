@@ -94,9 +94,8 @@ class InventoryService {
         const current = await inventoryRepository.findByProductId(productId);
         return {
           success: false,
-          message: `Insufficient stock. Available: ${
-            current ? current.available : 0
-          }, Requested: ${quantity}`,
+          message: `Insufficient stock. Available: ${current ? current.available : 0
+            }, Requested: ${quantity}`,
           inventory: current,
         };
       }
@@ -115,6 +114,46 @@ class InventoryService {
         `[InventoryService] Error reserving stock: ${error.message}`
       );
       throw error;
+    }
+  }
+
+  /**
+   * Reserve inventory for multiple products in a single batch operation
+   * @param {Array<{productId: string, quantity: number}>} products
+   */
+  async reserveStockBatch(products) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      // Use single bulkWrite operation instead of N queries
+      const result = await inventoryRepository.reserveStockBatch(products, session);
+
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+
+      await session.commitTransaction();
+
+      logger.info(
+        `[InventoryService] Successfully reserved stock for ${products.length} products in single batch operation`
+      );
+
+      return {
+        success: true,
+        message: `All ${products.length} products reserved successfully`,
+        modifiedCount: result.modifiedCount
+      };
+    } catch (error) {
+      await session.abortTransaction();
+      logger.warn(
+        `[InventoryService] Batch reservation failed: ${error.message}`
+      );
+      return {
+        success: false,
+        message: error.message,
+      };
+    } finally {
+      session.endSession();
     }
   }
 

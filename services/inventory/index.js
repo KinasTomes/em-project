@@ -32,18 +32,18 @@ let broker = null
  * Handle RESERVE request event
  */
 async function handleReserveRequest(message, metadata = {}) {
-	const { orderId, productId, quantity } = message
+	const { orderId, products } = message
 	const { eventId, correlationId } = metadata
 	const baseEventId = eventId || uuidv4()
 	const correlatedId = correlationId || orderId
 
 	logger.info(
-		{ orderId, productId, quantity, eventId, correlationId },
-		'📦 [Inventory] Handling RESERVE request'
+		{ orderId, productsCount: products.length, eventId, correlationId },
+		'📦 [Inventory] Handling RESERVE request (Batch)'
 	)
 
 	try {
-		const result = await inventoryService.reserveStock(productId, quantity)
+		const result = await inventoryService.reserveStockBatch(products)
 
 		if (result.success) {
 			await broker.publish(
@@ -52,8 +52,7 @@ async function handleReserveRequest(message, metadata = {}) {
 					type: 'INVENTORY_RESERVED',
 					data: {
 						orderId,
-						productId,
-						quantity,
+						products,
 						timestamp: new Date().toISOString(),
 					},
 				},
@@ -64,7 +63,7 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.info(
-				{ orderId, productId, quantity, routingKey: 'inventory.reserved' },
+				{ orderId, productsCount: products.length, routingKey: 'inventory.reserved' },
 				'✓ [Inventory] RESERVED - published with routing key'
 			)
 		} else {
@@ -74,7 +73,7 @@ async function handleReserveRequest(message, metadata = {}) {
 					type: 'INVENTORY_RESERVE_FAILED',
 					data: {
 						orderId,
-						productId,
+						products,
 						reason: result.message,
 						timestamp: new Date().toISOString(),
 					},
@@ -86,13 +85,13 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.warn(
-				{ orderId, productId, reason: result.message, routingKey: 'inventory.failed' },
+				{ orderId, reason: result.message, routingKey: 'inventory.failed' },
 				'✗ [Inventory] RESERVE_FAILED - insufficient stock'
 			)
 		}
 	} catch (error) {
 		logger.error(
-			{ error: error.message, orderId, productId },
+			{ error: error.message, orderId },
 			'❌ [Inventory] Error processing RESERVE request'
 		)
 
@@ -102,7 +101,7 @@ async function handleReserveRequest(message, metadata = {}) {
 				type: 'INVENTORY_RESERVE_FAILED',
 				data: {
 					orderId,
-					productId,
+					products,
 					reason: error.message,
 					timestamp: new Date().toISOString(),
 				},
@@ -313,8 +312,8 @@ async function startServer() {
 			logger.info({ port: PORT }, 'Inventory service ready')
 		})
 
-    // Connect to MongoDB
-    await connectDB();
+		// Connect to MongoDB
+		await connectDB();
 		// Connect to RabbitMQ broker using @ecommerce/message-broker
 		const { Broker } = await import('@ecommerce/message-broker')
 		broker = new Broker()
@@ -449,7 +448,7 @@ async function startServer() {
 			'order.release',    // INVENTORY_RELEASE_REQUEST
 			'payment.failed'    // PAYMENT_FAILED (for compensation)
 		]
-		
+
 		await broker.consume(queueName, routeInventoryEvent, null, routingKeys)
 		logger.info(
 			{ queue: queueName, routingKeys },

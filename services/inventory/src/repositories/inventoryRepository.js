@@ -79,13 +79,17 @@ class InventoryRepository {
   /**
    * Atomically reserve stock if available. Returns the updated document when success, otherwise null.
    */
-  async reserveIfAvailable(productId, quantity) {
+  async reserveIfAvailable(productId, quantity, session = null) {
     try {
       const normalizedId = normalizeProductId(productId);
+      const options = { new: true };
+      if (session) {
+        options.session = session;
+      }
       const updated = await Inventory.findOneAndUpdate(
         { productId: normalizedId, available: { $gte: quantity } },
         { $inc: { available: -quantity, reserved: quantity } },
-        { new: true }
+        options
       );
       return updated; // null if not enough available
     } catch (error) {
@@ -179,6 +183,58 @@ class InventoryRepository {
     } catch (error) {
       logger.error(
         `[InventoryRepository] Error bulk upserting: ${error.message}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Atomically reserve stock for multiple products in a single operation
+   * @param {Array<{productId: string, quantity: number}>} products
+   * @param {Object} session - MongoDB session for transaction
+   * @returns {Object} { success: boolean, failedProduct?: string }
+   */
+  async reserveStockBatch(products, session = null) {
+    try {
+      const operations = products.map(({ productId, quantity }) => ({
+        updateOne: {
+          filter: {
+            productId: normalizeProductId(productId),
+            available: { $gte: quantity }
+          },
+          update: {
+            $inc: { available: -quantity, reserved: quantity }
+          }
+        }
+      }));
+
+      const options = session ? { session } : {};
+      const result = await Inventory.bulkWrite(operations, options);
+
+      // Check if all operations succeeded
+      if (result.modifiedCount !== products.length) {
+        // Find which product failed
+        for (const { productId, quantity } of products) {
+          const inventory = await this.findByProductId(productId);
+          if (!inventory || inventory.available < quantity) {
+            return {
+              success: false,
+              failedProduct: productId,
+              message: `Insufficient stock for product ${productId}. Available: ${inventory?.available || 0}, Requested: ${quantity}`
+            };
+          }
+        }
+        // If we can't find the specific failure, return generic error
+        return {
+          success: false,
+          message: `Batch reserve failed: ${result.modifiedCount}/${products.length} products updated`
+        };
+      }
+
+      return { success: true, modifiedCount: result.modifiedCount };
+    } catch (error) {
+      logger.error(
+        `[InventoryRepository] Error in batch reserve: ${error.message}`
       );
       throw error;
     }
