@@ -12,6 +12,7 @@ COPY .npmrc .
 COPY package.json .
 
 # Copy all package.json files from shared packages and services
+COPY packages/circuit-breaker/package.json ./packages/circuit-breaker/
 COPY packages/config/package.json ./packages/config/
 COPY packages/logger/package.json ./packages/logger/
 COPY packages/message-broker/package.json ./packages/message-broker/
@@ -30,6 +31,7 @@ COPY pnpm-lock.yaml .
 RUN pnpm install --frozen-lockfile
 
 # Copy shared packages source code AFTER install so pnpm can create proper workspace links
+COPY packages/circuit-breaker ./packages/circuit-breaker
 COPY packages/config ./packages/config
 COPY packages/logger ./packages/logger
 COPY packages/message-broker ./packages/message-broker
