@@ -259,6 +259,9 @@ importers:
       '@ecommerce/message-broker':
         specifier: workspace:*
         version: link:../../packages/message-broker
+      '@ecommerce/outbox-pattern':
+        specifier: workspace:*
+        version: link:../../packages/outbox-pattern
       '@ecommerce/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing

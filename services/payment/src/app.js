@@ -37,8 +37,8 @@ class App {
 
 	async initOutbox() {
 		try {
-			const { OutboxManager: OM } = await import('@ecommerce/outbox-pattern')
-			OutboxManager = OM
+			const outboxModule = await import('@ecommerce/outbox-pattern')
+			OutboxManager = outboxModule.OutboxManager || outboxModule.default
 
 			this.outboxManager = new OutboxManager('payment', mongoose.connection)
 			logger.info('✓ [Payment] OutboxManager initialized')
