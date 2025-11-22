@@ -1,0 +1,28 @@
+{
+  "name": "@ecommerce/circuit-breaker",
+  "version": "1.0.0",
+  "description": "Resilient HTTP Client with Circuit Breaker, Retry, and Timeout",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "circuit-breaker",
+    "resilience",
+    "axios",
+    "retry",
+    "timeout"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "axios-retry": "^4.0.0",
+    "opossum": "^8.1.0",
+    "@opentelemetry/api": "^1.7.0"
+  },
+  "peerDependencies": {
+    "@ecommerce/logger": "*",
+    "@ecommerce/tracing": "*"
+  }
+}
