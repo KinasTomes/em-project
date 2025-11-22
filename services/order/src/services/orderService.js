@@ -105,9 +105,9 @@ class OrderService {
 
 			const timestamp = new Date().toISOString()
 			await this.outboxManager.createEvent({
-				eventType: 'INVENTORY_RESERVE_REQUEST',
+				eventType: 'ORDER_CREATED',
 				payload: {
-					type: 'RESERVE',
+					type: 'ORDER_CREATED',
 					data: {
 						orderId,
 						products: order.products.map((product) => ({

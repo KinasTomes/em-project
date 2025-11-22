@@ -77,10 +77,10 @@ class App {
 
 		try {
 			switch (type) {
-				case 'INVENTORY_RESERVED':
+				case 'INVENTORY_RESERVED_SUCCESS':
 					await this.orderService.handleInventoryReserved(payload, correlationId)
 					break
-				case 'INVENTORY_RESERVE_FAILED':
+				case 'INVENTORY_RESERVED_FAILED':
 					await this.orderService.handleInventoryReserveFailed(payload, correlationId)
 					break
 				case 'PAYMENT_SUCCEEDED':
@@ -122,8 +122,8 @@ class App {
 			// Consume from Order Service's dedicated queue with routing keys
 			const queueName = 'q.order-service'
 			const routingKeys = [
-				'inventory.reserved',      // INVENTORY_RESERVED
-				'inventory.failed',        // INVENTORY_RESERVE_FAILED
+				'inventory.reserved.success', // INVENTORY_RESERVED_SUCCESS
+				'inventory.reserved.failed',  // INVENTORY_RESERVED_FAILED
 				'payment.succeeded',       // PAYMENT_SUCCEEDED
 				'payment.failed'           // PAYMENT_FAILED
 			]

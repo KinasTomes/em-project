@@ -2,11 +2,14 @@
 
 Tài liệu này mô tả chi tiết các luồng Saga hiện có trong hệ thống E-commerce, bao gồm luồng chính (Happy Path) và các luồng bù trừ (Compensation).
 
+**Ngày cập nhật:** 22/11/2025  
+**Phiên bản:** 2.0.0
+
 ---
 
 ## 📊 Tổng quan kiến trúc
 
-Hệ thống sử dụng **Saga Pattern với Event Choreography** qua RabbitMQ, bao gồm 5 microservices:
+Hệ thống sử dụng **Saga Pattern với Event Choreography** qua RabbitMQ Topic Exchange, bao gồm 5 microservices:
 
 ```
 ┌─────────────┐
@@ -22,34 +25,44 @@ Hệ thống sử dụng **Saga Pattern với Event Choreography** qua RabbitMQ,
                   │                               │              │
                   └───────────────┬───────────────┴──────────────┘
                                   ▼
-                            ┌──────────┐
-                            │ RabbitMQ │
-                            └──────────┘
+                      ┌────────────────────────┐
+                      │ RabbitMQ Topic Exchange│
+                      │  'ecommerce.events'    │
+                      └────────────────────────┘
 ```
+
+### Queues và Routing Keys
+
+| Service | Queue Name | Routing Keys Subscribe | Mô tả |
+|---------|-----------|------------------------|-------|
+| Order | `q.order-service` | `inventory.reserved.success`<br>`inventory.reserved.failed`<br>`payment.succeeded`<br>`payment.failed` | Nhận phản hồi từ Inventory và Payment |
+| Inventory | `q.inventory-service` | `order.created`<br>`order.release`<br>`payment.failed` | Xử lý reserve/release stock |
+| Payment | `q.payment-service` | `order.confirmed` | Xử lý thanh toán khi order confirmed |
 
 ---
 
 ## 🎯 Luồng 1: Order Creation - Happy Path (Thành công)
 
 ### Mô tả
-User tạo đơn hàng mới → Reserve inventory → Process payment → Order hoàn thành với trạng thái PAID.
+User tạo đơn hàng → Reserve inventory (batch) → Process payment → Order hoàn thành với trạng thái PAID.
+
 
 ### Bảng luồng sự kiện
 
-| Bước | Event Type | Producer | Queue | Consumer | Action | Status Transition |
-|------|-----------|----------|-------|----------|--------|-------------------|
-| 1 | `POST /api/orders` | User → API Gateway | - | Order Service (HTTP) | Tạo Order với status `PENDING` | - → `PENDING` |
-| 2 | `INVENTORY_RESERVE_REQUEST` | Order Service (Outbox) | `inventory` | Inventory Service | Reserve stock cho từng product | - |
-| 3 | `INVENTORY_RESERVED` | Inventory Service | `orders` | Order Service | Đánh dấu product.reserved = true | `PENDING` (chờ đủ products) |
-| 4 | `ORDER_CONFIRMED` | Order Service (Outbox) | `STOCK_RESERVED` | Payment Service | Gửi thông tin order đã reserve đủ stock | `PENDING` → `CONFIRMED` |
-| 5 | `PAYMENT_SUCCEEDED` | Payment Service | `order-events` | Order Service | Thanh toán thành công | `CONFIRMED` → `PAID` |
-| 6 | `ORDER_PAID` | Order Service (Outbox) | - | (Future: Notification/Fulfillment) | Hoàn tất đơn hàng | - |
+| Bước | Event Type | Routing Key | Producer | Consumer | Action | Order Status |
+|------|-----------|-------------|----------|----------|--------|--------------|
+| 1 | `POST /api/orders` | - | Client → API Gateway | Order Service | Tạo Order với status `PENDING` | → `PENDING` |
+| 2 | `ORDER_CREATED` | `order.created` | Order Service (Outbox) | Inventory Service | Reserve stock cho **TẤT CẢ** products trong 1 transaction | - |
+| 3a | `INVENTORY_RESERVED_SUCCESS` | `inventory.reserved.success` | Inventory Service | Order Service | Tất cả products đã được reserved thành công | `PENDING` → `CONFIRMED` |
+| 3b | `ORDER_CONFIRMED` | `order.confirmed` | Order Service (Outbox) | Payment Service | Trigger payment processing | - |
+| 4 | `PAYMENT_SUCCEEDED` | `payment.succeeded` | Payment Service | Order Service | Thanh toán thành công | `CONFIRMED` → `PAID` |
+| 5 | `ORDER_PAID` | `order.paid` | Order Service (Outbox) | (Future: Notification) | Hoàn tất đơn hàng | - |
 
 ### Chi tiết từng bước
 
 #### **Bước 1: User tạo Order**
 ```javascript
-// Producer: User → API Gateway → Order Service
+// Request
 POST /api/orders
 Body: {
   "ids": ["product_1", "product_2"],
@@ -59,51 +72,61 @@ Body: {
 // Action: OrderService.createOrder()
 - Validate products qua Product Service
 - Tạo Order document (status: PENDING)
-- Phát INVENTORY_RESERVE_REQUEST qua Outbox cho từng product
+- Tạo 1 event ORDER_CREATED chứa TẤT CẢ products
+- Lưu vào Outbox trong cùng transaction với Order
 ```
 
-#### **Bước 2-3: Inventory Reserve**
+#### **Bước 2: Inventory Reserve (Batch Operation)**
 ```javascript
-// Producer: Order Service (Outbox → OutboxProcessor → RabbitMQ)
-Event: INVENTORY_RESERVE_REQUEST
-Queue: inventory
+// Producer: Order Service → Outbox → OutboxProcessor → RabbitMQ
+Event: ORDER_CREATED
+Routing Key: order.created
 Payload: {
-  type: "RESERVE",
-  data: {
-    orderId: "order_123",
-    productId: "product_1",
-    quantity: 2
-  }
+  type: "ORDER_CREATED",
+  orderId: "order_123",
+  products: [
+    { productId: "product_1", quantity: 2 },
+    { productId: "product_2", quantity: 1 }
+  ]
 }
 
 // Consumer: Inventory Service
-Action: inventoryService.reserveStock()
-- Check available stock
-- Atomic update: available -= quantity, reserved += quantity
+Action: inventoryService.reserveStockBatch(products)
+- Bắt đầu MongoDB Transaction
+- Sử dụng bulkWrite để check và reserve TẤT CẢ products trong 1 operation
+- Nếu TẤT CẢ đủ stock → Commit transaction
+- Nếu BẤT KỲ product nào thiếu → Rollback transaction
+```
 
+#### **Bước 3a: Inventory Reserved Success**
+```javascript
 // Producer: Inventory Service → RabbitMQ
-Event: INVENTORY_RESERVED (nếu thành công)
-Queue: orders
+Event: INVENTORY_RESERVED_SUCCESS
+Routing Key: inventory.reserved.success
 Payload: {
-  type: "INVENTORY_RESERVED",
+  type: "INVENTORY_RESERVED_SUCCESS",
   data: {
     orderId: "order_123",
-    productId: "product_1",
-    quantity: 2
+    products: [
+      { productId: "product_1", quantity: 2 },
+      { productId: "product_2", quantity: 1 }
+    ],
+    timestamp: "2025-11-22T10:30:00Z"
   }
 }
 
-// Consumer: Order Service._handleInventoryReserved()
+// Consumer: Order Service.handleInventoryReserved()
 Action:
-- Set product.reserved = true
-- Nếu ALL products reserved → emit ORDER_CONFIRMED
+- Đánh dấu TẤT CẢ products.reserved = true
+- Chuyển order.status: PENDING → CONFIRMED (dùng FSM)
+- Emit ORDER_CONFIRMED event qua Outbox
 ```
 
-#### **Bước 4: Order Confirmed (Trigger Payment)**
+#### **Bước 3b: Order Confirmed (Trigger Payment)**
 ```javascript
 // Producer: Order Service (Outbox)
 Event: ORDER_CONFIRMED
-Queue: STOCK_RESERVED
+Routing Key: order.confirmed
 Payload: {
   orderId: "order_123",
   totalPrice: 299.99,
@@ -111,102 +134,125 @@ Payload: {
   products: [
     { productId: "product_1", quantity: 2, price: 99.99 },
     { productId: "product_2", quantity: 1, price: 100.01 }
-  ]
+  ],
+  userId: "user_123",
+  timestamp: "2025-11-22T10:30:01Z"
 }
 
-// Consumer: Payment Service (stockReservedConsumer)
+// Consumer: Payment Service
 Action: paymentProcessor.process()
-- Mock payment logic (success rate 0.9)
-- Generate transactionId
+- Check idempotency (Redis)
+- Create/Get Payment record (MongoDB)
+- Mark as PROCESSING
+- Process payment (mock với success rate 90%)
+- Update Payment record với result
+- Mark as processed (Redis)
 ```
 
-#### **Bước 5-6: Payment Success**
+#### **Bước 4: Payment Success**
 ```javascript
 // Producer: Payment Service → RabbitMQ
 Event: PAYMENT_SUCCEEDED
-Queue: order-events
+Routing Key: payment.succeeded
 Payload: {
   type: "PAYMENT_SUCCEEDED",
   data: {
     orderId: "order_123",
-    transactionId: "txn_abc",
+    transactionId: "txn_abc123",
     amount: 299.99,
-    currency: "USD"
+    currency: "USD",
+    processedAt: "2025-11-22T10:30:02Z"
   }
 }
 
-// Consumer: Order Service._handlePaymentSucceeded()
+// Consumer: Order Service.handlePaymentSucceeded()
 Action:
-- Validate order status = CONFIRMED (FSM check)
-- Update order.status = PAID
+- Validate order.status = CONFIRMED (FSM check)
+- Update order.status: CONFIRMED → PAID
 - Emit ORDER_PAID event (Outbox)
 ```
 
 ---
 
-## ⚠️ Luồng 2: Inventory Reserve Failed (Bù trừ cấp 1)
+## ⚠️ Luồng 2: Inventory Reserve Failed (Thiếu hàng)
 
 ### Mô tả
-Inventory không đủ stock để reserve → Cancel order ngay lập tức.
+Một hoặc nhiều products không đủ stock → Cancel order ngay lập tức, không reserve product nào cả.
 
 ### Bảng luồng sự kiện
 
-| Bước | Event Type | Producer | Queue | Consumer | Action | Status Transition |
-|------|-----------|----------|-------|----------|--------|-------------------|
-| 1-2 | *(Same as Happy Path)* | - | - | - | Tạo Order, gửi reserve request | - → `PENDING` |
-| 3 | `INVENTORY_RESERVE_FAILED` | Inventory Service | `orders` | Order Service | Stock không đủ | - |
-| 4 | `ORDER_CANCELLED` | Order Service (Outbox) | - | (Future: Notification) | Hủy order | `PENDING` → `CANCELLED` |
+| Bước | Event Type | Routing Key | Producer | Consumer | Action | Order Status |
+|------|-----------|-------------|----------|----------|--------|--------------|
+| 1 | `POST /api/orders` | - | Client → API Gateway | Order Service | Tạo Order với status `PENDING` | → `PENDING` |
+| 2 | `ORDER_CREATED` | `order.created` | Order Service (Outbox) | Inventory Service | Kiểm tra stock cho TẤT CẢ products | - |
+| 3 | `INVENTORY_RESERVED_FAILED` | `inventory.reserved.failed` | Inventory Service | Order Service | Thiếu stock → Rollback transaction | - |
+| 4 | `ORDER_CANCELLED` | `order.cancelled` | Order Service (Outbox) | (Future: Notification) | Hủy order | `PENDING` → `CANCELLED` |
 
 ### Chi tiết
 
-#### **Bước 3: Inventory Insufficient**
+#### **Bước 2-3: Inventory Check Failed**
 ```javascript
-// Producer: Inventory Service
-Event: INVENTORY_RESERVE_FAILED
-Queue: orders
+// Consumer: Inventory Service.reserveStockBatch()
+Action:
+- Bắt đầu MongoDB Transaction
+- Sử dụng bulkWrite để check TẤT CẢ products
+- Phát hiện product_2 chỉ còn 0 units (cần 1)
+- Rollback transaction → KHÔNG trừ stock của bất kỳ product nào
+- Publish INVENTORY_RESERVED_FAILED
+
+// Producer: Inventory Service → RabbitMQ
+Event: INVENTORY_RESERVED_FAILED
+Routing Key: inventory.reserved.failed
 Payload: {
-  type: "INVENTORY_RESERVE_FAILED",
+  type: "INVENTORY_RESERVED_FAILED",
   data: {
     orderId: "order_123",
-    productId: "product_1",
-    reason: "Insufficient stock. Available: 0, Requested: 2"
+    products: [
+      { productId: "product_1", quantity: 2 },
+      { productId: "product_2", quantity: 1 }
+    ],
+    reason: "Insufficient stock for product product_2. Available: 0, Requested: 1",
+    timestamp: "2025-11-22T10:30:00Z"
   }
 }
 
-// Consumer: Order Service._handleInventoryReserveFailed()
+// Consumer: Order Service.handleInventoryReserveFailed()
 Action:
 - Validate FSM transition: PENDING → CANCELLED
 - Set order.status = CANCELLED
-- Set order.cancellationReason
+- Set order.cancellationReason = "Insufficient stock..."
 - Emit ORDER_CANCELLED event (Outbox)
 ```
 
-**⚠️ Lưu ý:** Không cần release inventory vì stock chưa được reserve.
+**⚠️ Lưu ý quan trọng:**
+- Không cần release inventory vì transaction đã rollback
+- Không có product nào bị trừ stock
+- Order chuyển sang CANCELLED ngay lập tức
 
 ---
 
-## 💳 Luồng 3: Payment Failed (Bù trừ cấp 2 - Compensation)
+## 💳 Luồng 3: Payment Failed (Bù trừ - Compensation)
 
 ### Mô tả
-Stock đã được reserve nhưng thanh toán thất bại → Phải release inventory về lại (compensation).
+Stock đã được reserve thành công nhưng thanh toán thất bại → Phải release inventory về lại (compensation).
 
 ### Bảng luồng sự kiện
 
-| Bước | Event Type | Producer | Queue | Consumer | Action | Status Transition |
-|------|-----------|----------|-------|----------|--------|-------------------|
-| 1-4 | *(Same as Happy Path)* | - | - | - | Order confirmed, stock reserved | - → `CONFIRMED` |
-| 5 | `PAYMENT_FAILED` | Payment Service | `order-events` | Order Service | Payment gateway declined | - |
-| 6a | `INVENTORY_RELEASE_REQUEST` | Order Service (Outbox) | `inventory` | Inventory Service | **Compensation**: Release stock | - |
-| 6b | `ORDER_CANCELLED` | Order Service (Outbox) | - | (Future: Notification) | Hủy order | `CONFIRMED` → `CANCELLED` |
-| 7 | `INVENTORY_RELEASED` | Inventory Service | `orders` | Order Service | Stock đã được trả lại | - |
+| Bước | Event Type | Routing Key | Producer | Consumer | Action | Order Status |
+|------|-----------|-------------|----------|----------|--------|--------------|
+| 1-3 | *(Same as Happy Path)* | - | - | - | Order confirmed, stock reserved | - → `CONFIRMED` |
+| 4 | `PAYMENT_FAILED` | `payment.failed` | Payment Service | Order Service + Inventory Service | Payment gateway declined | - |
+| 5a | `INVENTORY_RELEASE_REQUEST` | `order.release` | Order Service (Outbox) | Inventory Service | **Compensation**: Release stock | - |
+| 5b | `ORDER_CANCELLED` | `order.cancelled` | Order Service (Outbox) | (Future: Notification) | Hủy order | `CONFIRMED` → `CANCELLED` |
+| 6 | `INVENTORY_RELEASED` | `inventory.released` | Inventory Service | Order Service | Stock đã được trả lại | - |
 
 ### Chi tiết
 
-#### **Bước 5: Payment Failed**
+#### **Bước 4: Payment Failed**
 ```javascript
 // Producer: Payment Service
 Event: PAYMENT_FAILED
-Queue: order-events
+Routing Key: payment.failed
 Payload: {
   type: "PAYMENT_FAILED",
   data: {
@@ -214,24 +260,34 @@ Payload: {
     transactionId: "txn_failed",
     amount: 299.99,
     currency: "USD",
-    reason: "Mock gateway declined the payment"
+    reason: "Mock gateway declined the payment",
+    products: [
+      { productId: "product_1", quantity: 2 },
+      { productId: "product_2", quantity: 1 }
+    ],
+    processedAt: "2025-11-22T10:30:02Z"
   }
 }
 
-// Consumer: Order Service._handlePaymentFailed()
+// Consumer 1: Order Service.handlePaymentFailed()
 Action:
 - Validate order.status = CONFIRMED (FSM check)
 - Update order.status = CANCELLED
 - Loop qua tất cả reserved products
 - Emit INVENTORY_RELEASE_REQUEST cho từng product (Compensation)
 - Emit ORDER_CANCELLED event
+
+// Consumer 2: Inventory Service.handlePaymentFailed()
+Action:
+- Auto-compensation: Release stock cho tất cả products
+- Idempotent: Nếu nhận duplicate event → skip
 ```
 
-#### **Bước 6a: Compensation - Release Inventory**
+#### **Bước 5a: Compensation - Release Inventory**
 ```javascript
 // Producer: Order Service (Outbox)
 Event: INVENTORY_RELEASE_REQUEST
-Queue: inventory
+Routing Key: order.release
 Payload: {
   type: "RELEASE",
   data: {
@@ -248,7 +304,7 @@ Action: inventoryService.releaseReserved()
 
 // Producer: Inventory Service → RabbitMQ
 Event: INVENTORY_RELEASED
-Queue: orders
+Routing Key: inventory.released
 Payload: {
   type: "INVENTORY_RELEASED",
   data: {
@@ -259,68 +315,28 @@ Payload: {
 }
 ```
 
----
-
-## 🔄 Luồng 4: Payment Failed - Inventory Auto Compensation (Alternative)
-
-### Mô tả
-Payment Service có thể publish trực tiếp PAYMENT_FAILED event lên `inventory-events` queue để Inventory tự động release stock (alternative approach - hiện chưa implement).
-
-### Bảng luồng sự kiện
-
-| Bước | Event Type | Producer | Queue | Consumer | Action | Ghi chú |
-|------|-----------|----------|-------|----------|--------|---------|
-| 1-4 | *(Same as Happy Path)* | - | - | - | - | - |
-| 5a | `PAYMENT_FAILED` | Payment Service | `order-events` | Order Service | Cancel order | `CONFIRMED` → `CANCELLED` |
-| 5b | `PAYMENT_FAILED` | Payment Service | `inventory-events` | Inventory Service | **Auto compensation** | ⚠️ Hiện code có handler nhưng chưa được Payment gọi |
-
-### Chi tiết
-
-```javascript
-// Producer: Payment Service (publishFailure)
-// Publish to BOTH queues simultaneously
-await Promise.all([
-  broker.publish('order-events', failurePayload, { ... }),
-  broker.publish('inventory-events', {
-    ...failurePayload,
-    data: {
-      ...failurePayload.data,
-      compensation: true,
-      products: payload.products  // Forward products for auto-release
-    }
-  }, { ... })
-])
-
-// Consumer: Inventory Service (handlePaymentFailed)
-// Auto-release stock for all products in the order
-for (const product of message.products) {
-  await inventoryService.releaseReserved(product.productId, product.quantity)
-}
-```
-
-**⚠️ Lưu ý:** Approach này hiện chưa active vì:
-- Payment Service chỉ publish lên `order-events` queue
-- Inventory có handler `handlePaymentFailed` nhưng không được kích hoạt
-- Cần thống nhất approach: Order orchestrate compensation vs Inventory auto-compensation
+**⚠️ Lưu ý về Compensation:**
+- Có 2 cơ chế compensation song song:
+  1. Order Service gửi INVENTORY_RELEASE_REQUEST cho từng product
+  2. Inventory Service tự động release khi nhận PAYMENT_FAILED
+- Cả 2 đều idempotent nên không gây vấn đề nếu chạy song song
 
 ---
 
 ## 📋 Bảng tổng hợp Event Types
 
-| Event Type | Producer | Consumer | Queue | Purpose |
-|------------|----------|----------|-------|---------|
-| `INVENTORY_RESERVE_REQUEST` | Order Service (Outbox) | Inventory Service | `inventory` | Yêu cầu reserve stock |
-| `INVENTORY_RESERVED` | Inventory Service | Order Service | `orders` | Xác nhận reserved thành công |
-| `INVENTORY_RESERVE_FAILED` | Inventory Service | Order Service | `orders` | Thông báo reserve thất bại |
-| `ORDER_CONFIRMED` | Order Service (Outbox) | Payment Service | `STOCK_RESERVED` | Trigger payment (all stock reserved) |
-| `PAYMENT_SUCCEEDED` | Payment Service | Order Service | `order-events` | Thanh toán thành công |
-| `PAYMENT_FAILED` | Payment Service | Order Service | `order-events` | Thanh toán thất bại |
-| `INVENTORY_RELEASE_REQUEST` | Order Service (Outbox) | Inventory Service | `inventory` | **Compensation**: Yêu cầu release stock |
-| `INVENTORY_RELEASED` | Inventory Service | Order Service | `orders` | Xác nhận released thành công |
-| `ORDER_CANCELLED` | Order Service (Outbox) | (Future: Notification) | - | Đơn hàng bị hủy |
-| `ORDER_PAID` | Order Service (Outbox) | (Future: Fulfillment) | - | Đơn hàng đã thanh toán |
-| `PRODUCT_CREATED` | Product Service (Future) | Inventory Service | `inventory-events` | Tạo inventory cho product mới |
-| `PRODUCT_DELETED` | Product Service (Future) | Inventory Service | `inventory-events` | Xóa inventory khi product bị xóa |
+| Event Type | Producer | Consumer | Routing Key | Purpose |
+|------------|----------|----------|-------------|---------|
+| `ORDER_CREATED` | Order Service (Outbox) | Inventory Service | `order.created` | Yêu cầu reserve stock cho tất cả products |
+| `INVENTORY_RESERVED_SUCCESS` | Inventory Service | Order Service | `inventory.reserved.success` | Xác nhận reserved thành công |
+| `INVENTORY_RESERVED_FAILED` | Inventory Service | Order Service | `inventory.reserved.failed` | Thông báo reserve thất bại |
+| `ORDER_CONFIRMED` | Order Service (Outbox) | Payment Service | `order.confirmed` | Trigger payment (all stock reserved) |
+| `PAYMENT_SUCCEEDED` | Payment Service | Order Service | `payment.succeeded` | Thanh toán thành công |
+| `PAYMENT_FAILED` | Payment Service | Order Service + Inventory Service | `payment.failed` | Thanh toán thất bại |
+| `INVENTORY_RELEASE_REQUEST` | Order Service (Outbox) | Inventory Service | `order.release` | **Compensation**: Yêu cầu release stock |
+| `INVENTORY_RELEASED` | Inventory Service | Order Service | `inventory.released` | Xác nhận released thành công |
+| `ORDER_CANCELLED` | Order Service (Outbox) | (Future: Notification) | `order.cancelled` | Đơn hàng bị hủy |
+| `ORDER_PAID` | Order Service (Outbox) | (Future: Fulfillment) | `order.paid` | Đơn hàng đã thanh toán |
 
 ---
 
@@ -388,6 +404,7 @@ await redisClient.set(processedKey, '1', { EX: 86400 })  // 24h TTL
 **Layer 2: Service-level**
 - Order Service: Check order status với FSM trước khi transition
 - Inventory Service: Atomic operations với MongoDB `$inc`
+- Payment Service: Check payment status trong database
 
 ---
 
@@ -410,34 +427,94 @@ fsm.pay()      // PENDING → PAID ✗ (throws error)
 
 ---
 
-## 🎯 Compensation Strategies
+## 🔄 Batch Reserve Operation (Atomic Transaction)
 
-### Strategy 1: Orchestrated Compensation (Hiện tại)
+### Mô tả
+Inventory Service sử dụng MongoDB Transaction với bulkWrite để đảm bảo tính atomic khi reserve nhiều products.
 
-Order Service orchestrate tất cả compensation logic.
+### Implementation
 
-**Ưu điểm:**
-- ✅ Centralized compensation logic
-- ✅ Order có full context về products cần release
-- ✅ Easy to debug và trace
+```javascript
+// services/inventory/src/repositories/inventoryRepository.js
+async reserveStockBatch(products, session = null) {
+  try {
+    // Tạo bulk operations cho tất cả products
+    const operations = products.map(({ productId, quantity }) => ({
+      updateOne: {
+        filter: {
+          productId: normalizeProductId(productId),
+          available: { $gte: quantity }  // ← Check đủ stock
+        },
+        update: {
+          $inc: { available: -quantity, reserved: quantity }
+        }
+      }
+    }));
 
-**Nhược điểm:**
-- ❌ Order Service phải biết compensation logic của Inventory
-- ❌ Tight coupling giữa services
+    const options = session ? { session } : {};
+    const result = await Inventory.bulkWrite(operations, options);
 
----
+    // Kiểm tra tất cả operations thành công
+    if (result.modifiedCount !== products.length) {
+      // Tìm product nào failed
+      for (const { productId, quantity } of products) {
+        const inventory = await this.findByProductId(productId);
+        if (!inventory || inventory.available < quantity) {
+          return {
+            success: false,
+            failedProduct: productId,
+            message: `Insufficient stock for product ${productId}. Available: ${inventory?.available || 0}, Requested: ${quantity}`
+          };
+        }
+      }
+    }
 
-### Strategy 2: Auto Compensation (Alternative - chưa active)
+    return { success: true, modifiedCount: result.modifiedCount };
+  } catch (error) {
+    throw error;
+  }
+}
+```
 
-Mỗi service tự compensation khi nhận failure event.
+### Ưu điểm
+- ✅ **Atomic**: Tất cả products được reserve hoặc không product nào được reserve
+- ✅ **Performance**: 1 database round-trip thay vì N queries
+- ✅ **Consistency**: Không có trạng thái partial reserve
+- ✅ **Transaction Safety**: Rollback tự động nếu có lỗi
 
-**Ưu điểm:**
-- ✅ Loose coupling
-- ✅ Inventory encapsulate compensation logic
+### Kịch bản
 
-**Nhược điểm:**
-- ❌ Payment phải forward product list
-- ❌ Harder to debug distributed compensation
+**Scenario 1: Tất cả products đủ stock**
+```
+Input: [
+  { productId: "A", quantity: 2 },
+  { productId: "B", quantity: 1 }
+]
+
+Result:
+- Product A: available -= 2, reserved += 2 ✓
+- Product B: available -= 1, reserved += 1 ✓
+- modifiedCount = 2
+- Transaction COMMIT
+- Publish INVENTORY_RESERVED_SUCCESS
+```
+
+**Scenario 2: Một product thiếu stock**
+```
+Input: [
+  { productId: "A", quantity: 2 },  // Available: 5 ✓
+  { productId: "B", quantity: 1 }   // Available: 0 ✗
+]
+
+Result:
+- bulkWrite returns modifiedCount = 1 (chỉ A được update)
+- Detect mismatch: modifiedCount (1) !== products.length (2)
+- Find failed product: B
+- Transaction ROLLBACK
+- Product A không bị trừ stock
+- Product A không bị trừ stock
+- Publish INVENTORY_RESERVED_FAILED
+```
 
 ---
 
@@ -447,13 +524,13 @@ Mỗi service tự compensation khi nhận failure event.
 User creates order
        ↓
    [PENDING]
-       ├─→ INVENTORY_RESERVED (all products) → [CONFIRMED]
+       ├─→ INVENTORY_RESERVED_SUCCESS (all products) → [CONFIRMED]
        │                                            ├─→ PAYMENT_SUCCEEDED → [PAID] ✓
        │                                            └─→ PAYMENT_FAILED → [CANCELLED] ⚠️
        │                                                  ↓
        │                                            (Compensation: Release inventory)
        │
-       └─→ INVENTORY_RESERVE_FAILED → [CANCELLED] ✗
+       └─→ INVENTORY_RESERVED_FAILED → [CANCELLED] ✗
 ```
 
 ---
@@ -466,8 +543,8 @@ Mỗi saga flow có duy nhất 1 `correlationId` (thường là `orderId`) để
 
 ```javascript
 // All events trong cùng saga có cùng correlationId
-INVENTORY_RESERVE_REQUEST  correlationId: order_123
-INVENTORY_RESERVED         correlationId: order_123
+ORDER_CREATED              correlationId: order_123
+INVENTORY_RESERVED_SUCCESS correlationId: order_123
 ORDER_CONFIRMED            correlationId: order_123
 PAYMENT_SUCCEEDED          correlationId: order_123
 ORDER_PAID                 correlationId: order_123
@@ -505,22 +582,14 @@ setTimeout(() => {
 }, 5 * 60 * 1000)
 ```
 
-### 2. Partial Success Handling
-
-```javascript
-// Nếu 1 trong 3 products reserve failed
-// Option 1: Cancel toàn bộ order (hiện tại)
-// Option 2: Partial fulfillment (future)
-```
-
-### 3. Payment Refund Saga
+### 2. Payment Refund Saga
 
 ```javascript
 // User request refund after PAID
 ORDER_REFUND_REQUEST → PAYMENT_REFUND → INVENTORY_RELEASE → ORDER_REFUNDED
 ```
 
-### 4. Notification Service
+### 3. Notification Service
 
 ```javascript
 // Send email/SMS khi order state thay đổi
@@ -536,15 +605,15 @@ ORDER_PAID → NOTIFICATION_SERVICE → Send confirmation email
 |--------|----------------|
 | **Pattern** | Saga with Event Choreography |
 | **Services** | Order (orchestrator), Inventory, Payment |
-| **Queues** | `orders`, `inventory`, `STOCK_RESERVED`, `order-events` |
-| **Compensation** | Orchestrated by Order Service |
-| **Atomicity** | Outbox Pattern (Order only) |
-| **Idempotency** | Broker-level (Redis) + Service-level (FSM) |
+| **Queues** | `q.order-service`, `q.inventory-service`, `q.payment-service` |
+| **Compensation** | Dual mechanism (Order orchestrated + Inventory auto) |
+| **Atomicity** | Outbox Pattern (Order only) + Batch Transaction (Inventory) |
+| **Idempotency** | Broker-level (Redis) + Service-level (FSM, DB checks) |
 | **State Machine** | FSM in Order Service |
 | **Tracing** | OpenTelemetry with correlationId |
 | **Error Handling** | DLQ + Retry + Compensation |
 
 ---
 
-**Last Updated:** November 20, 2025  
-**Version:** 1.0.0
+**Last Updated:** November 22, 2025  
+**Version:** 2.0.0

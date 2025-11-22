@@ -18,6 +18,7 @@ const { v4: uuidv4 } = require('uuid')
 const inventoryService = require('./src/services/inventoryService')
 const {
 	ReserveRequestSchema,
+	OrderCreatedSchema,
 	ReleaseRequestSchema,
 	ProductCreatedSchema,
 	ProductDeletedSchema,
@@ -47,9 +48,9 @@ async function handleReserveRequest(message, metadata = {}) {
 
 		if (result.success) {
 			await broker.publish(
-				'inventory.reserved',
+				'inventory.reserved.success',
 				{
-					type: 'INVENTORY_RESERVED',
+					type: 'INVENTORY_RESERVED_SUCCESS',
 					data: {
 						orderId,
 						products,
@@ -63,14 +64,14 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.info(
-				{ orderId, productsCount: products.length, routingKey: 'inventory.reserved' },
-				'✓ [Inventory] RESERVED - published with routing key'
+				{ orderId, productsCount: products.length, routingKey: 'inventory.reserved.success' },
+				'✓ [Inventory] RESERVED_SUCCESS - published with routing key'
 			)
 		} else {
 			await broker.publish(
-				'inventory.failed',
+				'inventory.reserved.failed',
 				{
-					type: 'INVENTORY_RESERVE_FAILED',
+					type: 'INVENTORY_RESERVED_FAILED',
 					data: {
 						orderId,
 						products,
@@ -85,8 +86,8 @@ async function handleReserveRequest(message, metadata = {}) {
 			)
 
 			logger.warn(
-				{ orderId, reason: result.message, routingKey: 'inventory.failed' },
-				'✗ [Inventory] RESERVE_FAILED - insufficient stock'
+				{ orderId, reason: result.message, routingKey: 'inventory.reserved.failed' },
+				'✗ [Inventory] RESERVED_FAILED - insufficient stock'
 			)
 		}
 	} catch (error) {
@@ -96,9 +97,9 @@ async function handleReserveRequest(message, metadata = {}) {
 		)
 
 		await broker.publish(
-			'inventory.failed',
+			'inventory.reserved.failed',
 			{
-				type: 'INVENTORY_RESERVE_FAILED',
+				type: 'INVENTORY_RESERVED_FAILED',
 				data: {
 					orderId,
 					products,
@@ -344,6 +345,22 @@ async function startServer() {
 					throw error
 				}
 			}
+			// Try ORDER_CREATED
+			else if (
+				rawType === 'ORDER_CREATED' ||
+				rawType === 'order.created'
+			) {
+				try {
+					validatedMessage = OrderCreatedSchema.parse(rawMessage)
+					eventType = 'ORDER_CREATED'
+				} catch (error) {
+					logger.error(
+						{ error: error.message, rawMessage },
+						'❌ [Inventory] ORDER_CREATED schema validation failed'
+					)
+					throw error
+				}
+			}
 			// Try RELEASE
 			else if (
 				rawType === 'INVENTORY_RELEASE_REQUEST' ||
@@ -424,6 +441,7 @@ async function startServer() {
 			// Route to appropriate handler
 			switch (eventType) {
 				case 'RESERVE':
+				case 'ORDER_CREATED':
 					await handleReserveRequest(validatedMessage, metadata)
 					break
 				case 'RELEASE':
@@ -444,7 +462,7 @@ async function startServer() {
 		// Single consumer that routes and validates all event types
 		const queueName = 'q.inventory-service'
 		const routingKeys = [
-			'order.created',    // INVENTORY_RESERVE_REQUEST
+			'order.created',    // ORDER_CREATED
 			'order.release',    // INVENTORY_RELEASE_REQUEST
 			'payment.failed'    // PAYMENT_FAILED (for compensation)
 		]

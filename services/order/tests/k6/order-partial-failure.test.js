@@ -221,86 +221,85 @@ export default function (data) {
 		let finalStatus = 'UNKNOWN'
 		let statusHistory = ['PENDING']
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            sleep(pollIntervalSeconds)
-            const statusRes = http.get(`${ORDERS_URL}/${partialOrderId}`, {
-                headers,
-                tags: { name: 'get_order_partial_failure' },
-            })
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			sleep(pollIntervalSeconds)
+			const statusRes = http.get(`${ORDERS_URL}/${partialOrderId}`, {
+				headers,
+				tags: { name: 'get_order_partial_failure' },
+			})
 
-            if (statusRes.status !== 200) {
-                console.warn(`⚠️  Attempt ${attempt}: unexpected status ${statusRes.status}`)
-                continue
-            }
+			if (statusRes.status !== 200) {
+				console.warn(`⚠️  Attempt ${attempt}: unexpected status ${statusRes.status}`)
+				continue
+			}
 
-            // 1. Dùng res.json() của K6 để parse an toàn
-            let body;
-            try {
-                body = statusRes.json(); 
-            } catch (e) {
-                console.error("JSON Parse Error:", e);
-                continue;
-            }
+			// 1. Dùng res.json() của K6 để parse an toàn
+			let body;
+			try {
+				body = statusRes.json();
+			} catch (e) {
+				console.error("JSON Parse Error:", e);
+				continue;
+			}
 
-            finalStatus = body.status;
-            
-            // Log trạng thái (giữ nguyên logic cũ)
-            if (statusHistory[statusHistory.length - 1] !== finalStatus) {
-                statusHistory.push(finalStatus)
-                console.log(`   Status: ${statusHistory[statusHistory.length - 2]} → ${finalStatus}`)
-            } else {
-                console.log(`   Polling attempt ${attempt}: status=${finalStatus}`)
-            }
+			finalStatus = body.status;
 
-            // 2. Xử lý trạng thái CANCELLED
-            if (finalStatus === 'CANCELLED') {
-                // Debug log để chắc chắn 100%
-                console.log(`DEBUG BODY: ${JSON.stringify(body)}`);
+			// Log trạng thái (giữ nguyên logic cũ)
+			if (statusHistory[statusHistory.length - 1] !== finalStatus) {
+				statusHistory.push(finalStatus)
+				console.log(`   Status: ${statusHistory[statusHistory.length - 2]} → ${finalStatus}`)
+			} else {
+				console.log(`   Polling attempt ${attempt}: status=${finalStatus}`)
+			}
 
-                // Lấy reason một cách an toàn nhất
-                // Ưu tiên lấy trực tiếp, sau đó thử lấy trong data (nếu có wrapper)
-                const reason = body.cancellationReason || (body.data && body.data.cancellationReason) || 'unknown';
+			// 2. Xử lý trạng thái CANCELLED
+			if (finalStatus === 'CANCELLED') {
+				// Debug log để chắc chắn 100%
+				console.log(`DEBUG BODY: ${JSON.stringify(body)}`);
 
-                console.log(`✓ [CRITICAL TEST] Order ${partialOrderId} cancelled: ${reason}`)
-                console.log(`   Flow: ${statusHistory.join(' → ')}`)
-                
-                // Check keyword quan trọng
-                const isInventoryFailure = reason.toLowerCase().includes('inventory') || 
-                                         reason.toLowerCase().includes('stock') ||
-                                         reason.toLowerCase().includes('product'); // Thêm 'product' vì log của bạn có chữ "Product ..."
+				// Lấy reason một cách an toàn nhất
+				// Ưu tiên lấy trực tiếp, sau đó thử lấy trong data (nếu có wrapper)
+				const reason = body.cancellationReason || (body.data && body.data.cancellationReason) || 'unknown';
 
-                if (isInventoryFailure) {
-                    console.log(`✓ Cancellation reason is correct (inventory failure)`)
-                    orderStatusCancelled.add(1)
-                    orderFlowSuccess.add(1)
-                } else {
-                    console.warn(`⚠️  Unexpected cancellation reason: ${reason}`)
-                    orderStatusCancelled.add(0)
-                    orderFlowSuccess.add(0)
-                    // Không fail() ở đây để tránh bị catch, chỉ đánh dấu failed metric
-                    console.error(`✗ Order ${partialOrderId} cancelled with wrong reason`)
-                }
-                
-                // 🔥 QUAN TRỌNG: return luôn để thoát khỏi test case này ngay lập tức
-                // Không cho nó loop thêm lần nào nữa
-                return; 
-            }
+				console.log(`✓ [CRITICAL TEST] Order ${partialOrderId} cancelled: ${reason}`)
+				console.log(`   Flow: ${statusHistory.join(' → ')}`)
 
-            // 3. Xử lý trạng thái PAID/CONFIRMED (Lỗi logic)
-            if (finalStatus === 'CONFIRMED' || finalStatus === 'PAID') {
-                console.error(`✗ [CRITICAL TEST] Order ${partialOrderId} unexpectedly ${finalStatus}!`)
-                orderStatusCancelled.add(0)
-                orderFlowSuccess.add(0)
-                // 🔥 Return luôn
-                return;
-            }
-        }
+				// Check keyword quan trọng
+				const isInventoryFailure = reason.toLowerCase().includes('inventory') ||
+					reason.toLowerCase().includes('stock') ||
+					reason.toLowerCase().includes('product'); // Thêm 'product' vì log của bạn có chữ "Product ..."
+
+				if (isInventoryFailure) {
+					console.log(`✓ Cancellation reason is correct (inventory failure)`)
+					orderStatusCancelled.add(1)
+					orderFlowSuccess.add(1)
+				} else {
+					console.warn(`⚠️  Unexpected cancellation reason: ${reason}`)
+					orderStatusCancelled.add(0)
+					orderFlowSuccess.add(0)
+					// Không fail() ở đây để tránh bị catch, chỉ đánh dấu failed metric
+					console.error(`✗ Order ${partialOrderId} cancelled with wrong reason`)
+				}
+
+				// 🔥 QUAN TRỌNG: return luôn để thoát khỏi test case này ngay lập tức
+				// Không cho nó loop thêm lần nào nữa
+				return;
+			}
+
+			// 3. Xử lý trạng thái PAID/CONFIRMED (Lỗi logic)
+			if (finalStatus === 'CONFIRMED' || finalStatus === 'PAID') {
+				console.error(`✗ [CRITICAL TEST] Order ${partialOrderId} unexpectedly ${finalStatus}!`)
+				orderStatusCancelled.add(0)
+				orderFlowSuccess.add(0)
+				// 🔥 Return luôn
+				return;
+			}
+		}
 
 		orderStatusCancelled.add(0)
 		orderFlowSuccess.add(0)
 		fail(
-			`✗ [CRITICAL TEST] Order ${partialOrderId} did not reach CANCELLED within ${
-				maxAttempts * pollIntervalSeconds
+			`✗ [CRITICAL TEST] Order ${partialOrderId} did not reach CANCELLED within ${maxAttempts * pollIntervalSeconds
 			}s. Last status: ${finalStatus}, History: ${statusHistory.join(' → ')}`
 		)
 	})

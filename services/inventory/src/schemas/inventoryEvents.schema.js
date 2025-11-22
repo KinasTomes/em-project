@@ -33,6 +33,38 @@ const ReserveRequestSchema = z
 	})
 
 /**
+ * Schema for ORDER_CREATED event
+ */
+const OrderCreatedSchema = z
+	.object({
+		type: z.string().optional(),
+		data: z
+			.object({
+				orderId: z.string().min(1, 'orderId is required'),
+				products: z
+					.array(
+						z.object({
+							productId: z.string().min(1, 'productId is required'),
+							quantity: z.number().int().positive('quantity must be positive'),
+						})
+					)
+					.min(1, 'At least one product is required'),
+			})
+			.passthrough(),
+		timestamp: z.string().optional(),
+	})
+	.passthrough()
+	.transform((message) => {
+		// Normalize to consistent format
+		const data = message.data || message
+		return {
+			orderId: data.orderId,
+			products: data.products,
+			rawType: message.type || 'ORDER_CREATED',
+		}
+	})
+
+/**
  * Schema for RELEASE request event
  */
 const ReleaseRequestSchema = z
@@ -157,6 +189,7 @@ const PaymentFailedSchema = z
 
 module.exports = {
 	ReserveRequestSchema,
+	OrderCreatedSchema,
 	ReleaseRequestSchema,
 	ProductCreatedSchema,
 	ProductDeletedSchema,
