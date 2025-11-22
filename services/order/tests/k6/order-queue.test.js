@@ -3,11 +3,13 @@ import { check, fail, sleep, group } from 'k6'
 import { Rate } from 'k6/metrics'
 
 /**
- * K6 scenarios to validate the Outbox-driven order flow.
+ * K6 scenarios to validate the full SAGA order flow.
  * Steps per VU:
- *  1. Create an order that should succeed and confirm once Inventory reserves stock.
- *  2. Create another order whose inventory is unavailable to force INVENTORY_RESERVE_FAILED.
- *  3. Poll each order until their expected terminal status (CONFIRMED or CANCELLED).
+ *  1. Create an order with sufficient inventory (should reach PAID or CANCELLED by payment).
+ *  2. Create another order with zero inventory to force INVENTORY_RESERVE_FAILED.
+ *  3. Poll each order until their expected terminal status:
+ *     - Order 1: PAID (payment success) or CANCELLED (payment failure ~10%)
+ *     - Order 2: CANCELLED (inventory failure)
  */
 
 export const options = {
@@ -20,9 +22,9 @@ export const options = {
 	},
 	thresholds: {
 		http_req_failed: ['rate<0.05'],
-		http_req_duration: ['p(95)<1500'],
+		http_req_duration: ['p(95)<2000'], // Increased for payment processing
 		order_flow_success: ['rate==1'],
-		order_status_confirmed: ['rate>0.95'],
+		order_status_confirmed: ['rate>0.85'], // Adjusted for payment success rate (90%)
 		order_status_cancelled: ['rate>0.95'],
 	},
 }
@@ -174,7 +176,7 @@ export default function (data) {
 		Authorization: `Bearer ${token}`,
 	}
 
-	group('Create order and await inventory confirmation', () => {
+	group('Create order and await full SAGA completion (PAID or CANCELLED)', () => {
 		const orderPayload = JSON.stringify({
 			ids: [successProductId],
 			quantities: [1],
@@ -210,11 +212,12 @@ export default function (data) {
 		}
 
 		const { orderId } = JSON.parse(createRes.body)
-		console.log(`⏳ Waiting for inventory to confirm order ${orderId}`)
+		console.log(`⏳ Waiting for full SAGA flow: ${orderId} → PENDING → CONFIRMED → PAID/CANCELLED`)
 
-		const maxAttempts = Number(__ENV.POLL_ATTEMPTS || 12)
+		const maxAttempts = Number(__ENV.POLL_ATTEMPTS || 20) // Increased for payment processing
 		const pollIntervalSeconds = Number(__ENV.POLL_INTERVAL || 2)
 		let finalStatus = 'UNKNOWN'
+		let statusHistory = ['PENDING']
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			sleep(pollIntervalSeconds)
@@ -233,24 +236,41 @@ export default function (data) {
 			try {
 				const body = JSON.parse(statusRes.body)
 				finalStatus = body.status
-				console.log(
-					`📦 Order ${orderId} polling attempt ${attempt}: status=${finalStatus}`
-				)
+				
+				// Track status changes
+				if (statusHistory[statusHistory.length - 1] !== finalStatus) {
+					statusHistory.push(finalStatus)
+					console.log(`✓ Order ${orderId} status changed: ${statusHistory[statusHistory.length - 2]} → ${finalStatus}`)
+				} else {
+					console.log(`📦 Order ${orderId} polling attempt ${attempt}: status=${finalStatus}`)
+				}
 
-				if (finalStatus === 'CONFIRMED' || finalStatus === 'PAID') {
+				// Check for final states
+				if (finalStatus === 'PAID') {
+					console.log(`✓ Order ${orderId} reached PAID (payment succeeded)`)
+					console.log(`  Flow: ${statusHistory.join(' → ')}`)
 					orderStatusConfirmed.add(1)
 					orderFlowSuccess.add(1)
 					return
 				}
 
 				if (finalStatus === 'CANCELLED') {
-					orderStatusConfirmed.add(0)
-					orderFlowSuccess.add(0)
-					fail(
-						`✗ Order ${orderId} cancelled: ${
-							body?.reason || 'inventory failure'
-						}`
-					)
+					const reason = body.cancellationReason || 'unknown'
+					console.log(`⚠️  Order ${orderId} cancelled: ${reason}`)
+					console.log(`  Flow: ${statusHistory.join(' → ')}`)
+					
+					// Check if cancellation is due to payment failure (expected)
+					if (reason.toLowerCase().includes('payment')) {
+						console.log(`  Note: Payment failure is expected (90% success rate)`)
+						orderStatusConfirmed.add(1) // Still counts as successful flow
+						orderFlowSuccess.add(1)
+						return
+					} else {
+						// Unexpected cancellation (inventory should not fail with available=10)
+						orderStatusConfirmed.add(0)
+						orderFlowSuccess.add(0)
+						fail(`✗ Order ${orderId} cancelled unexpectedly: ${reason}`)
+					}
 				}
 			} catch (err) {
 				console.error(`✗ Failed to parse order status response: ${err}`)
@@ -260,13 +280,13 @@ export default function (data) {
 		orderStatusConfirmed.add(0)
 		orderFlowSuccess.add(0)
 		fail(
-			`✗ Order ${orderId} did not reach CONFIRMED within ${
+			`✗ Order ${orderId} did not reach final state (PAID/CANCELLED) within ${
 				maxAttempts * pollIntervalSeconds
-			}s`
+			}s. Last status: ${finalStatus}, History: ${statusHistory.join(' → ')}`
 		)
 	})
 
-	group('Create order that should fail inventory reservation', () => {
+	group('Create order that should fail inventory reservation (all products unavailable)', () => {
 		const failureOrderPayload = JSON.stringify({
 			ids: [failureProductId],
 			quantities: [1],

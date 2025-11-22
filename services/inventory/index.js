@@ -151,12 +151,12 @@ async function handleReleaseRequest(message, metadata = {}) {
 
 		logger.info(
 			{ orderId, productId, quantity, routingKey: 'inventory.released' },
-			'✓ [Inventory] RELEASED - published with routing key'
+			'✓ [Inventory] RELEASED - published with routing key [SUCCESSED HIHI]'
 		)
 	} catch (error) {
 		logger.error(
 			{ error: error.message, orderId, productId },
-			'❌ [Inventory] Error processing RELEASE request'
+			'❌ [Inventory] Error processing RELEASE request [FAILED HIHI]'
 		)
 	}
 }

@@ -77,6 +77,7 @@ class OrderController {
 				totalPrice: order.totalPrice,
 				user: order.user,
 				status: order.status,
+				cancellationReason: order.cancellationReason,
 				createdAt: order.createdAt,
 			})
 		} catch (error) {

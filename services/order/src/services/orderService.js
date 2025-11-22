@@ -188,11 +188,51 @@ class OrderService {
 			logger.warn(
 				{
 					orderId: payload.orderId,
+					productId: payload.productId,
 					currentStatus: order.status,
 					correlationId,
 				},
-				'[Order] Order already in final state, skipping inventory reserved update'
+				'[Order] Order already in final state, need to release this reserved inventory'
 			)
+			
+			// ✅ FIX: If order is already CANCELLED, release this inventory immediately
+			// This handles race condition where INVENTORY_RESERVE_FAILED arrives before INVENTORY_RESERVED
+			if (order.status === 'CANCELLED') {
+				const session = await mongoose.startSession()
+				try {
+					await session.withTransaction(async () => {
+						await this.outboxManager.createEvent({
+							eventType: 'INVENTORY_RELEASE_REQUEST',
+							payload: {
+								type: 'RELEASE',
+								data: {
+									orderId: order._id,
+									productId: payload.productId,
+									quantity: payload.quantity,
+									reason: 'ORDER_ALREADY_CANCELLED',
+								},
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+							routingKey: 'order.release',
+						})
+						
+						logger.info(
+							{
+								orderId: order._id,
+								productId: payload.productId,
+								quantity: payload.quantity,
+								correlationId,
+							},
+							'[Order] Released inventory for cancelled order (race condition compensation)'
+						)
+					})
+				} finally {
+					session.endSession()
+				}
+			}
+			
 			return
 		}
 
@@ -276,7 +316,9 @@ class OrderService {
 		logger.warn(
 			{
 				orderId: payload.orderId,
+				productId: payload.productId,
 				reason: payload.reason,
+				fullPayload: JSON.stringify(payload),
 				correlationId,
 			},
 			'[Order] Processing INVENTORY_RESERVE_FAILED'
@@ -291,6 +333,20 @@ class OrderService {
 			return
 		}
 
+		logger.info(
+			{
+				orderId: payload.orderId,
+				currentStatus: order.status,
+				currentCancellationReason: order.cancellationReason,
+				products: order.products.map(p => ({
+					id: p._id.toString(),
+					reserved: p.reserved
+				})),
+				correlationId,
+			},
+			'[Order] Current order state before processing INVENTORY_RESERVE_FAILED'
+		)
+
 		// Check if order is already in final state
 		const fsm = createOrderStateMachine(order.status)
 		if (fsm.isFinalState()) {
@@ -298,6 +354,7 @@ class OrderService {
 				{
 					orderId: payload.orderId,
 					currentStatus: order.status,
+					existingCancellationReason: order.cancellationReason,
 					correlationId,
 				},
 				'[Order] Order already in final state, skipping transition'
@@ -312,7 +369,32 @@ class OrderService {
 				try {
 					fsm.cancel()
 					order.status = fsm.getState()
-					order.cancellationReason = payload.reason || 'Inventory reserve failed'
+					
+					// ✅ FIX: Build detailed cancellation reason with product info
+					const failedProductId = payload.productId || 'unknown'
+					const failureReason = payload.reason || payload.message || 'Inventory reserve failed'
+					const detailedReason = `Product ${failedProductId}: ${failureReason}`
+					
+					// If there are already reserved products, mention partial failure
+					const reservedProducts = order.products.filter(p => p.reserved === true)
+					if (reservedProducts.length > 0) {
+						order.cancellationReason = `Partial failure - ${detailedReason} (${reservedProducts.length} products were reserved and will be released)`
+					} else {
+						order.cancellationReason = detailedReason
+					}
+					
+					logger.info(
+						{
+							orderId: order._id,
+							cancellationReasonBeforeSave: order.cancellationReason,
+							failedProductId,
+							failureReason,
+							reservedCount: reservedProducts.length,
+							correlationId,
+						},
+						'[Order] About to save order with cancellation reason'
+					)
+					
 					await order.save({ session })
 
 					logger.info(
@@ -321,14 +403,15 @@ class OrderService {
 							oldStatus: 'PENDING',
 							newStatus: order.status,
 							cancellationReason: order.cancellationReason,
+							cancellationReasonAfterSave: order.cancellationReason,
+							failedProductId,
+							reservedCount: reservedProducts.length,
 							correlationId,
 						},
 						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
 					)
 
 					// ✅ FIX: Release reserved inventory (compensation for partial failure)
-					const reservedProducts = order.products.filter(p => p.reserved === true)
-					
 					if (reservedProducts.length > 0) {
 						logger.info(
 							{ 
