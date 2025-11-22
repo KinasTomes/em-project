@@ -1,39 +1,8 @@
 const { z } = require('zod')
 
 /**
- * Schema for RESERVE request event
- */
-const ReserveRequestSchema = z
-	.object({
-		type: z.string().optional(),
-		data: z
-			.object({
-				orderId: z.string().min(1, 'orderId is required'),
-				products: z
-					.array(
-						z.object({
-							productId: z.string().min(1, 'productId is required'),
-							quantity: z.number().int().positive('quantity must be positive'),
-						})
-					)
-					.min(1, 'At least one product is required'),
-			})
-			.passthrough(),
-		timestamp: z.string().optional(),
-	})
-	.passthrough()
-	.transform((message) => {
-		// Normalize to consistent format
-		const data = message.data || message
-		return {
-			orderId: data.orderId,
-			products: data.products,
-			rawType: message.type || 'RESERVE',
-		}
-	})
-
-/**
  * Schema for ORDER_CREATED event
+ * Inventory listens to this event to reserve stock
  */
 const OrderCreatedSchema = z
 	.object({
@@ -61,35 +30,6 @@ const OrderCreatedSchema = z
 			orderId: data.orderId,
 			products: data.products,
 			rawType: message.type || 'ORDER_CREATED',
-		}
-	})
-
-/**
- * Schema for RELEASE request event
- */
-const ReleaseRequestSchema = z
-	.object({
-		type: z.string().optional(),
-		data: z
-			.object({
-				orderId: z.string().min(1, 'orderId is required'),
-				productId: z.string().min(1, 'productId is required'),
-				quantity: z.number().int().positive('quantity must be positive'),
-				reason: z.string().optional(),
-			})
-			.passthrough(),
-		timestamp: z.string().optional(),
-	})
-	.passthrough()
-	.transform((message) => {
-		// Normalize to consistent format
-		const data = message.data || message
-		return {
-			orderId: data.orderId,
-			productId: data.productId,
-			quantity: data.quantity,
-			reason: data.reason || 'RELEASE',
-			rawType: message.type || 'RELEASE',
 		}
 	})
 
@@ -188,9 +128,8 @@ const PaymentFailedSchema = z
 	})
 
 module.exports = {
-	ReserveRequestSchema,
 	OrderCreatedSchema,
-	ReleaseRequestSchema,
+	OrderCancelledSchema,
 	ProductCreatedSchema,
 	ProductDeletedSchema,
 	PaymentFailedSchema,

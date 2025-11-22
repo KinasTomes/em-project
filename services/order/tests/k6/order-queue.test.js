@@ -30,7 +30,8 @@ export const options = {
 }
 
 // API Gateway URLs (E2E path - mô phỏng client thực tế)
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:3003'
+// const BASE_URL = 'http://localhost:3003'
+const BASE_URL = 'http://34.1.200.169:3003'
 const AUTH_URL = `${BASE_URL}/auth`
 const PRODUCTS_URL = `${BASE_URL}/products`
 const ORDERS_URL = `${BASE_URL}/orders`
