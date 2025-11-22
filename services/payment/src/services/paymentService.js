@@ -1,5 +1,6 @@
 const Payment = require('../models/payment')
 const logger = require('@ecommerce/logger')
+const mongoose = require('mongoose')
 
 /**
  * Payment Service
@@ -8,7 +9,8 @@ const logger = require('@ecommerce/logger')
  * Handles payment creation, updates, and queries.
  */
 class PaymentService {
-	constructor() {
+	constructor(outboxManager) {
+		this.outboxManager = outboxManager
 		this.maxRetries = 3
 	}
 
@@ -79,74 +81,147 @@ class PaymentService {
 	}
 
 	/**
-	 * Update payment status to SUCCEEDED
+	 * Update payment status to SUCCEEDED and publish event via Outbox
 	 * 
 	 * @param {string} orderId
 	 * @param {object} result
 	 * @param {string} result.transactionId
 	 * @param {object} result.gatewayResponse
+	 * @param {string} correlationId
 	 * @returns {Promise<Payment>}
 	 */
-	async markAsSucceeded(orderId, result) {
-		const payment = await Payment.findByOrderId(orderId)
-		if (!payment) {
-			throw new Error(`Payment not found for orderId: ${orderId}`)
+	async markAsSucceeded(orderId, result, correlationId) {
+		const session = await mongoose.startSession()
+		session.startTransaction()
+
+		try {
+			const payment = await Payment.findByOrderId(orderId).session(session)
+			if (!payment) {
+				throw new Error(`Payment not found for orderId: ${orderId}`)
+			}
+
+			payment.status = 'SUCCEEDED'
+			payment.transactionId = result.transactionId
+			payment.gatewayResponse = result.gatewayResponse || {}
+			payment.processedAt = new Date()
+			await payment.save({ session })
+
+			// Publish PAYMENT_SUCCEEDED via Outbox (transactional)
+			await this.outboxManager.createEvent({
+				eventType: 'PAYMENT_SUCCEEDED',
+				payload: {
+					type: 'PAYMENT_SUCCEEDED',
+					data: {
+						orderId,
+						transactionId: result.transactionId,
+						amount: payment.amount,
+						currency: payment.currency,
+						processedAt: payment.processedAt.toISOString(),
+					},
+				},
+				session,
+				correlationId,
+				routingKey: 'payment.succeeded',
+			})
+
+			await session.commitTransaction()
+
+			logger.info(
+				{
+					orderId,
+					transactionId: payment.transactionId,
+					amount: payment.amount,
+				},
+				'[PaymentService] Payment succeeded and event queued via Outbox'
+			)
+
+			return payment
+		} catch (error) {
+			await session.abortTransaction()
+			logger.error(
+				{ error: error.message, orderId },
+				'[PaymentService] Failed to mark payment as succeeded'
+			)
+			throw error
+		} finally {
+			session.endSession()
 		}
-
-		payment.status = 'SUCCEEDED'
-		payment.transactionId = result.transactionId
-		payment.gatewayResponse = result.gatewayResponse || {}
-		payment.processedAt = new Date()
-		await payment.save()
-
-		logger.info(
-			{
-				orderId,
-				transactionId: payment.transactionId,
-				amount: payment.amount,
-			},
-			'[PaymentService] Payment succeeded'
-		)
-
-		return payment
 	}
 
 	/**
-	 * Update payment status to FAILED
+	 * Update payment status to FAILED and publish event via Outbox
 	 * 
 	 * @param {string} orderId
 	 * @param {object} result
 	 * @param {string} result.reason
+	 * @param {Array} products
+	 * @param {string} correlationId
 	 * @param {Error} error
 	 * @returns {Promise<Payment>}
 	 */
-	async markAsFailed(orderId, result, error = null) {
-		const payment = await Payment.findByOrderId(orderId)
-		if (!payment) {
-			throw new Error(`Payment not found for orderId: ${orderId}`)
+	async markAsFailed(orderId, result, products, correlationId, error = null) {
+		const session = await mongoose.startSession()
+		session.startTransaction()
+
+		try {
+			const payment = await Payment.findByOrderId(orderId).session(session)
+			if (!payment) {
+				throw new Error(`Payment not found for orderId: ${orderId}`)
+			}
+
+			payment.status = 'FAILED'
+			payment.reason = result.reason || error?.message || 'Payment failed'
+			payment.transactionId = result.transactionId
+			payment.processedAt = new Date()
+
+			if (error) {
+				payment.addError(error)
+			}
+
+			await payment.save({ session })
+
+			// Publish PAYMENT_FAILED via Outbox (transactional)
+			await this.outboxManager.createEvent({
+				eventType: 'PAYMENT_FAILED',
+				payload: {
+					type: 'PAYMENT_FAILED',
+					data: {
+						orderId,
+						transactionId: result.transactionId,
+						amount: payment.amount,
+						currency: payment.currency,
+						reason: payment.reason,
+						processedAt: payment.processedAt.toISOString(),
+						products: products || [],
+					},
+				},
+				session,
+				correlationId,
+				routingKey: 'payment.failed',
+			})
+
+			await session.commitTransaction()
+
+			logger.warn(
+				{
+					orderId,
+					reason: payment.reason,
+					attempts: payment.attempts,
+				},
+				'[PaymentService] Payment failed and event queued via Outbox'
+			)
+
+			return payment
+		} catch (error) {
+			await session.abortTransaction()
+			logger.error(
+				{ error: error.message, orderId },
+				'[PaymentService] Failed to mark payment as failed'
+			)
+			throw error
+		} finally {
+			session.endSession()
 		}
-
-		payment.status = 'FAILED'
-		payment.reason = result.reason || error?.message || 'Payment failed'
-		payment.transactionId = result.transactionId
-		payment.processedAt = new Date()
-
-		if (error) {
-			payment.addError(error)
-		}
-
-		await payment.save()
-
-		logger.warn(
-			{
-				orderId,
-				reason: payment.reason,
-				attempts: payment.attempts,
-			},
-			'[PaymentService] Payment failed'
-		)
-
-		return payment
 	}
 
 	/**

@@ -1,67 +1,7 @@
-const { v4: uuidv4 } = require('uuid')
 const logger = require('@ecommerce/logger')
 const { OrderConfirmedEventSchema } = require('../schemas/orderConfirmed.schema')
 const IdempotencyService = require('../services/idempotencyService')
 const PaymentService = require('../services/paymentService')
-
-async function publishSuccess({ broker, config, payload, result, correlationId }) {
-	const message = {
-		type: 'PAYMENT_SUCCEEDED',
-		data: {
-			orderId: payload.orderId,
-			transactionId: result.transactionId,
-			amount: result.amount,
-			currency: result.currency,
-			processedAt: result.processedAt,
-		},
-	}
-
-	await broker.publish('payment.succeeded', message, {
-		eventId: uuidv4(),
-		correlationId,
-	})
-
-	logger.info(
-		{
-			orderId: payload.orderId,
-			routingKey: 'payment.succeeded',
-			transactionId: result.transactionId,
-			correlationId,
-		},
-		'✓ [Payment] Published PAYMENT_SUCCEEDED'
-	)
-}
-
-async function publishFailure({ broker, config, payload, result, correlationId }) {
-	const failurePayload = {
-		type: 'PAYMENT_FAILED',
-		data: {
-			orderId: payload.orderId,
-			transactionId: result.transactionId,
-			amount: result.amount,
-			currency: result.currency,
-			reason: result.reason || 'Payment failed',
-			processedAt: result.processedAt,
-			products: payload.products || [],
-		},
-	}
-
-	// Publish with routing key 'payment.failed' which routes to both Order and Inventory services
-	await broker.publish('payment.failed', failurePayload, {
-		eventId: uuidv4(),
-		correlationId,
-	})
-
-	logger.warn(
-		{
-			orderId: payload.orderId,
-			transactionId: result.transactionId,
-			routingKey: 'payment.failed',
-			correlationId,
-		},
-		'⚠️ [Payment] Published PAYMENT_FAILED to Order and Inventory services'
-	)
-}
 
 /**
  * Register consumer for ORDER_CONFIRMED events
@@ -169,42 +109,30 @@ async function registerOrderConfirmedConsumer({
 			})
 
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			// STEP 5: Update Payment Record
+			// STEP 5: Update Payment Record & Publish Event (Transactional via Outbox)
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			if (result.status === 'SUCCEEDED') {
-				await paymentService.markAsSucceeded(orderId, {
-					transactionId: result.transactionId,
-					gatewayResponse: result,
-				})
+				await paymentService.markAsSucceeded(
+					orderId,
+					{
+						transactionId: result.transactionId,
+						gatewayResponse: result,
+					},
+					correlationId
+				)
 			} else {
-				await paymentService.markAsFailed(orderId, result)
+				await paymentService.markAsFailed(
+					orderId,
+					result,
+					payload.products || [],
+					correlationId
+				)
 			}
 
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			// STEP 6: Mark as Processed (Redis Idempotency)
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			await idempotencyService.markAsProcessed(orderId)
-
-			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			// STEP 4: Publish Result
-			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			if (result.status === 'SUCCEEDED') {
-				await publishSuccess({
-					broker,
-					config,
-					payload,
-					result,
-					correlationId,
-				})
-			} else {
-				await publishFailure({
-					broker,
-					config,
-					payload,
-					result,
-					correlationId,
-				})
-			}
 		},
 		null, // No schema at broker level - we validate in handler
 		routingKeys // Bind queue to exchange with routing keys

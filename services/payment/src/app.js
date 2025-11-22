@@ -10,16 +10,19 @@ const {
 	registerOrderConfirmedConsumer,
 } = require('./consumers/orderConfirmedConsumer')
 
+let OutboxManager
+
 class App {
 	constructor() {
 		this.app = express()
 		this.server = null
 		this.broker = null
+		this.outboxManager = null
 		this.paymentProcessor = new PaymentProcessor({
 			successRate: config.payment.successRate,
 		})
 		this.idempotencyService = new IdempotencyService(config.redisUrl)
-		this.paymentService = new PaymentService()
+		this.paymentService = null
 	}
 
 	async connectDB() {
@@ -30,6 +33,22 @@ class App {
 	async disconnectDB() {
 		await mongoose.disconnect()
 		logger.info('✓ [Payment] MongoDB disconnected')
+	}
+
+	async initOutbox() {
+		try {
+			const { OutboxManager: OM } = await import('@ecommerce/outbox-pattern')
+			OutboxManager = OM
+
+			this.outboxManager = new OutboxManager('payment', mongoose.connection)
+			logger.info('✓ [Payment] OutboxManager initialized')
+
+			await this.outboxManager.startProcessor()
+			logger.info('✓ [Payment] OutboxProcessor started')
+		} catch (error) {
+			logger.error({ error: error.message }, 'Failed to initialize Outbox')
+			throw error
+		}
 	}
 
 	setMiddlewares() {
@@ -51,6 +70,9 @@ class App {
 		// Initialize idempotency service
 		await this.idempotencyService.connect()
 
+		// Initialize PaymentService with OutboxManager
+		this.paymentService = new PaymentService(this.outboxManager)
+
 		// Register ORDER_CONFIRMED consumer
 		await registerOrderConfirmedConsumer({
 			broker: this.broker,
@@ -66,6 +88,7 @@ class App {
 		this.setMiddlewares()
 		this.setRoutes()
 
+		await this.initOutbox()
 		await this.setupBroker()
 
 		this.server = this.app.listen(config.port, () => {
@@ -82,6 +105,11 @@ class App {
 		if (this.broker) {
 			await this.broker.close()
 			logger.info('✓ [Payment] Broker connections closed')
+		}
+
+		if (this.outboxManager) {
+			await this.outboxManager.stopProcessor()
+			logger.info('✓ [Payment] Outbox processor stopped')
 		}
 
 		await this.disconnectDB()
