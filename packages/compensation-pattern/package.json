@@ -1,0 +1,18 @@
+{
+  "name": "@ecommerce/compensation-pattern",
+  "version": "1.0.0",
+  "description": "Compensation pattern implementation with retry logic and DLQ support",
+  "main": "index.js",
+  "scripts": {},
+  "keywords": [
+    "compensation",
+    "saga",
+    "retry",
+    "error-handling"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ecommerce/logger": "workspace:*"
+  }
+}

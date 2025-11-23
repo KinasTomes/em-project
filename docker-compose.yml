@@ -4,12 +4,166 @@ services:
   auth:
     build: ./auth
     ports:
+<<<<<<< Updated upstream
       - "3000:3000"
     env_file:
       - ./auth/.env
+=======
+      - "${AUTH_PORT:-3001}:3001"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${AUTH_PORT:-3001}
+      - MONGODB_AUTH_URI=${MONGODB_AUTH_URI:-mongodb://mongodb-auth:27017/auth}
+      - JWT_SECRET=${JWT_SECRET}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+    depends_on:
+      mongodb-auth:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+>>>>>>> Stashed changes
     networks:
       - ecommerce
 
+<<<<<<< Updated upstream
+=======
+  #----------------------------------------------------------------
+  # 3. Product Service
+  #----------------------------------------------------------------
+  product:
+    build:
+      context: .
+      dockerfile: ./services/product/Dockerfile
+    ports:
+      - "${PRODUCT_PORT:-3004}:3004"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PRODUCT_PORT:-3004}
+      - MONGODB_PRODUCT_URI=${MONGODB_PRODUCT_URI:-mongodb://mongodb-product:27017/product}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - INVENTORY_URL=${INVENTORY_URL:-http://inventory:3005}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      mongodb-product:
+        condition: service_healthy
+      inventory:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 4. Order Service
+  #----------------------------------------------------------------
+  order:
+    build:
+      context: .
+      dockerfile: ./services/order/Dockerfile
+    ports:
+      - "${ORDER_PORT:-3002}:3002"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${ORDER_PORT:-3002}
+      - MONGODB_ORDER_URI=${MONGODB_ORDER_URI:-mongodb://mongodb-order:27017/order}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - EXCHANGE_NAME=${EXCHANGE_NAME:-ecommerce.events}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      mongodb-order:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 5. Inventory Service
+  #----------------------------------------------------------------
+  inventory:
+    build:
+      context: .
+      dockerfile: ./services/inventory/Dockerfile
+    ports:
+      - "${INVENTORY_PORT:-3005}:3005"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${INVENTORY_PORT:-3005}
+      - MONGODB_INVENTORY_URI=${MONGODB_INVENTORY_URI:-mongodb://mongodb-inventory:27017/inventory}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - EXCHANGE_NAME=${EXCHANGE_NAME:-ecommerce.events}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      mongodb-inventory:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 6. Payment Service
+  #----------------------------------------------------------------
+  payment:
+    build:
+      context: .
+      dockerfile: ./services/payment/Dockerfile
+    ports:
+      - "${PAYMENT_PORT:-3006}:3006"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PAYMENT_PORT:-3006}
+      - PAYMENT_PORT=${PAYMENT_PORT:-3006}
+      - PAYMENT_SUCCESS_RATE=${PAYMENT_SUCCESS_RATE:-0.9}
+      - MONGODB_PAYMENT_URI=${MONGODB_PAYMENT_URI}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - EXCHANGE_NAME=${EXCHANGE_NAME:-ecommerce.events}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+    depends_on:
+      - rabbitmq
+      - redis
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 7. INFRASTRUCTURE
+  #----------------------------------------------------------------
+  # # Redis for Idempotency and Caching
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: 'redis'
+  #   ports:
+  #     - "6379:6379"
+  #   networks:
+  #     - ecommerce-network
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 5
+
+  # RabbitMQ for Message Brokering
+>>>>>>> Stashed changes
   rabbitmq:
     image: rabbitmq:3.8-management-alpine
     container_name: 'rabbitmq'
@@ -57,5 +211,84 @@ services:
     networks:
       - ecommerce
 
+<<<<<<< Updated upstream
 networks:
   ecommerce:
+=======
+  #----------------------------------------------------------------
+  # MongoDB Services (for local development/testing)
+  #----------------------------------------------------------------
+  mongodb-auth:
+    image: mongo:7
+    container_name: mongodb-auth
+    ports:
+      - "27017:27017"
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongodb_auth_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-product:
+    image: mongo:7
+    container_name: mongodb-product
+    ports:
+      - "27018:27017"
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongodb_product_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-order:
+    image: mongo:7
+    container_name: mongodb-order
+    ports:
+      - "27019:27017"
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongodb_order_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-inventory:
+    image: mongo:7
+    container_name: mongodb-inventory
+    ports:
+      - "27020:27017"
+    networks:
+      - ecommerce-network
+    volumes:
+      - mongodb_inventory_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+#----------------------------------------------------------------
+# 6. NETWORKS & VOLUMES
+#----------------------------------------------------------------
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  mongodb_auth_data:
+  mongodb_product_data:
+  mongodb_order_data:
+  mongodb_inventory_data:
+>>>>>>> Stashed changes
