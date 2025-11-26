@@ -9,7 +9,7 @@ const { z } = require('zod')
  * 2. Direct: { orderId, totalPrice, ... }
  */
 const orderDataSchema = z.object({
-	orderId: z.string().min(1, 'orderId is required'),
+	orderId: z.union([z.string(), z.any()]).transform(val => String(val)), // Accept ObjectId or string
 	totalPrice: z.number().nonnegative('totalPrice must be non-negative'),
 	currency: z.string().min(1).default('USD'),
 	products: z

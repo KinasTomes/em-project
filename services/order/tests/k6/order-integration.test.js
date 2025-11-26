@@ -135,18 +135,26 @@ export function setup() {
 			fail(errorMsg)
 		}
 
-		const okCreate = check(res, {
+		const statusOk = res.status === 201
+		const durationOk = res.timings.duration < 1000
+		
+		check(res, {
 			'CREATE PRODUCT status == 201': (r) => r.status === 201,
 			'CREATE PRODUCT duration < 1000ms': (r) => r.timings.duration < 1000,
 		})
-		product_create_ok.add(okCreate)
+		
+		product_create_ok.add(statusOk)
 
-		if (!okCreate) {
+		if (!statusOk) {
 			const errorMsg = `Product create must be 201. Got ${res.status} - ${
 				res.body || res.error || 'No response'
 			}`
 			console.error(`❌ ${errorMsg}`)
 			fail(errorMsg)
+		}
+		
+		if (!durationOk) {
+			console.warn(`⚠️ Product creation took ${res.timings.duration}ms (>1000ms threshold)`)
 		}
 
 		try {

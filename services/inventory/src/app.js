@@ -4,14 +4,18 @@ const logger = require('@ecommerce/logger')
 const config = require('./config')
 const inventoryRoutes = require('./routes/inventoryRoutes')
 const { registerInventoryConsumer } = require('./consumers/inventoryConsumer')
+const IdempotencyService = require('./services/idempotencyService')
 
 let Broker
+let OutboxManager
 
 class App {
 	constructor() {
 		this.app = express()
 		this.server = null
 		this.broker = null
+		this.outboxManager = null
+		this.idempotencyService = new IdempotencyService(config.redisUrl)
 	}
 
 	setMiddlewares() {
@@ -81,6 +85,22 @@ class App {
 		logger.info('✓ [Inventory] MongoDB disconnected')
 	}
 
+	async initOutbox() {
+		try {
+			const { OutboxManager: OM } = await import('@ecommerce/outbox-pattern')
+			OutboxManager = OM
+
+			this.outboxManager = new OutboxManager('inventory', mongoose.connection)
+			logger.info('✓ [Inventory] OutboxManager initialized')
+
+			await this.outboxManager.startProcessor()
+			logger.info('✓ [Inventory] OutboxProcessor started')
+		} catch (error) {
+			logger.error({ error: error.message }, 'Failed to initialize Outbox')
+			throw error
+		}
+	}
+
 	async setupBroker() {
 		const { Broker: BrokerClass } = await import('@ecommerce/message-broker')
 		Broker = BrokerClass
@@ -88,8 +108,11 @@ class App {
 		this.broker = new Broker()
 		logger.info('✓ [Inventory] Broker initialized')
 
-		// Register inventory consumer
-		await registerInventoryConsumer(this.broker)
+		// Initialize idempotency service
+		await this.idempotencyService.connect()
+
+		// Register inventory consumer with outboxManager and idempotencyService
+		await registerInventoryConsumer(this.broker, this.outboxManager, this.idempotencyService)
 	}
 
 	async start() {
@@ -98,6 +121,7 @@ class App {
 		await this.connectDB()
 		this.setMiddlewares()
 		this.setRoutes()
+		await this.initOutbox()
 		await this.setupBroker()
 
 		this.server = this.app.listen(config.port, () => {
@@ -106,9 +130,19 @@ class App {
 	}
 
 	async stop() {
+		if (this.idempotencyService) {
+			await this.idempotencyService.close()
+			logger.info('✓ [Inventory] Idempotency service closed')
+		}
+
 		if (this.broker) {
 			await this.broker.close()
 			logger.info('✓ [Inventory] Broker connections closed')
+		}
+
+		if (this.outboxManager) {
+			await this.outboxManager.stopProcessor()
+			logger.info('✓ [Inventory] Outbox processor stopped')
 		}
 
 		await this.disconnectDB()

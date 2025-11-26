@@ -372,7 +372,8 @@ export class Broker {
             eventId,
             correlationId,
             timestamp: msg.properties.timestamp,
-            headers: msg.properties.headers
+            headers: msg.properties.headers,
+            routingKey: msg.fields.routingKey // Include routing key for event type detection
           });
         });
 

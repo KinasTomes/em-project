@@ -3,8 +3,10 @@ const mongoose = require('mongoose')
 const config = require('./config')
 const logger = require('@ecommerce/logger')
 const OrderService = require('./services/orderService')
+const IdempotencyService = require('./services/idempotencyService')
 const OrderController = require('./controllers/orderController')
 const orderRoutes = require('./routes/orderRoutes')
+const { registerOrderEventsConsumer } = require('./consumers/orderEventsConsumer')
 
 // Import ES modules dynamically
 let OutboxManager
@@ -17,6 +19,7 @@ class App {
 		this.broker = null
 		this.server = null
 		this.orderService = null
+		this.idempotencyService = new IdempotencyService(config.redisUrl)
 	}
 
 	setMiddlewares() {
@@ -70,48 +73,7 @@ class App {
 		logger.info('✓ [Order] MongoDB disconnected')
 	}
 
-	async _handleOrderEvent(message, metadata = {}) {
-		const { type, data: payload = {} } = message
-		const { eventId, correlationId } = metadata
-
-		logger.info({ eventId, correlationId, type }, '⚡ [Order] Received event')
-
-		if (!this.orderService) {
-			logger.error('OrderService not initialized')
-			throw new Error('OrderService not initialized')
-		}
-
-		try {
-			switch (type) {
-				case 'INVENTORY_RESERVED_SUCCESS':
-					await this.orderService.handleInventoryReserved(payload, correlationId)
-					break
-				case 'INVENTORY_RESERVED_FAILED':
-					await this.orderService.handleInventoryReserveFailed(payload, correlationId)
-					break
-				case 'PAYMENT_SUCCEEDED':
-					await this.orderService.handlePaymentSucceeded(payload, correlationId)
-					break
-				case 'PAYMENT_COMPLETED':
-					// Backward compatibility - treat as PAYMENT_SUCCEEDED
-					await this.orderService.handlePaymentSucceeded(payload, correlationId)
-					break
-				case 'PAYMENT_FAILED':
-					await this.orderService.handlePaymentFailed(payload, correlationId)
-					break
-				default:
-					logger.warn({ type, correlationId }, '⚠️ [Order] Unknown event type')
-			}
-		} catch (error) {
-			logger.error(
-				{ error: error.message, eventId, type },
-				'❌ Error handling event'
-			)
-			throw error
-		}
-	}
-
-	async setupOrderConsumer() {
+	async setupBroker() {
 		try {
 			logger.info(
 				'⏳ [Order] Setting up event consumer using @ecommerce/message-broker'
@@ -125,35 +87,31 @@ class App {
 			this.broker = new Broker()
 			logger.info('✓ [Order] Broker initialized')
 
-			// Consume from Order Service's dedicated queue with routing keys
-			const queueName = 'q.order-service'
-			const routingKeys = [
-				'inventory.reserved.success', // INVENTORY_RESERVED_SUCCESS
-				'inventory.reserved.failed',  // INVENTORY_RESERVED_FAILED
-				'payment.succeeded',       // PAYMENT_SUCCEEDED
-				'payment.failed'           // PAYMENT_FAILED
-			]
+			// Initialize idempotency service
+			await this.idempotencyService.connect()
 
-			await this.broker.consume(
-				queueName,
-				this._handleOrderEvent.bind(this),
-				null, // No schema validation at broker level
-				routingKeys
-			)
-			logger.info({ queue: queueName, routingKeys }, '✓ [Order] Event consumer ready')
+			// Register order events consumer with idempotency
+			await registerOrderEventsConsumer({
+				broker: this.broker,
+				orderService: this.orderService,
+				idempotencyService: this.idempotencyService,
+				config,
+			})
 		} catch (error) {
 			logger.error(
 				{ error: error.message },
 				'❌ Fatal: Unable to setup event consumer'
 			)
+			throw error
 		}
 	}
+
 	async start() {
 		await this.connectDB()
 		this.setMiddlewares()
 		await this.initOutbox()
 		this.setRoutes()
-		await this.setupOrderConsumer()
+		await this.setupBroker()
 
 		this.server = this.app.listen(config.port, () => {
 			logger.info({ port: config.port }, '✓ [Order] Server listening')
@@ -161,6 +119,11 @@ class App {
 	}
 
 	async stop() {
+		if (this.idempotencyService) {
+			await this.idempotencyService.close()
+			logger.info('✓ [Order] Idempotency service closed')
+		}
+
 		if (this.broker) {
 			await this.broker.close()
 			logger.info('✓ [Order] Broker connections closed')

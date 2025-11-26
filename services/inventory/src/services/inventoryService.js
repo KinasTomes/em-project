@@ -120,8 +120,42 @@ class InventoryService {
   /**
    * Reserve inventory for multiple products in a single batch operation
    * @param {Array<{productId: string, quantity: number}>} products
+   * @param {Object} externalSession - Optional external MongoDB session for transactional outbox
    */
-  async reserveStockBatch(products) {
+  async reserveStockBatch(products, externalSession = null) {
+    // If external session provided, use it (for transactional outbox)
+    if (externalSession) {
+      try {
+        const result = await inventoryRepository.reserveStockBatch(products, externalSession);
+
+        if (!result.success) {
+          return {
+            success: false,
+            message: result.message,
+          };
+        }
+
+        logger.info(
+          `[InventoryService] Successfully reserved stock for ${products.length} products (external session)`
+        );
+
+        return {
+          success: true,
+          message: `All ${products.length} products reserved successfully`,
+          modifiedCount: result.modifiedCount
+        };
+      } catch (error) {
+        logger.warn(
+          `[InventoryService] Batch reservation failed: ${error.message}`
+        );
+        return {
+          success: false,
+          message: error.message,
+        };
+      }
+    }
+
+    // Otherwise, create own session (backward compatibility)
     const session = await mongoose.startSession();
     session.startTransaction();
     try {

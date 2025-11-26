@@ -36,27 +36,35 @@ const OrderCreatedSchema = z
 /**
  * Schema for ORDER_CANCELLED event
  * Inventory listens to this event to release reserved stock
+ * 
+ * Accepts two formats:
+ * 1. Wrapped: { type?: string, data: { orderId, reason, ... } }
+ * 2. Direct: { orderId, reason, ... }
  */
-const OrderCancelledSchema = z
-	.object({
-		type: z.string().optional(),
-		data: z
-			.object({
-				orderId: z.string().min(1, 'orderId is required'),
-				reason: z.string().optional(),
-				products: z
-					.array(
-						z.object({
-							productId: z.string().min(1, 'productId is required'),
-							quantity: z.number().int().positive('quantity must be positive'),
-						})
-					)
-					.optional(),
+const orderCancelledDataSchema = z.object({
+	orderId: z.union([z.string(), z.any()]).transform(val => String(val)), // Accept ObjectId or string
+	reason: z.string().optional(),
+	products: z
+		.array(
+			z.object({
+				productId: z.string().min(1, 'productId is required'),
+				quantity: z.number().int().positive('quantity must be positive'),
 			})
-			.passthrough(),
-		timestamp: z.string().optional(),
-	})
-	.passthrough()
+		)
+		.optional(),
+}).passthrough()
+
+const OrderCancelledSchema = z
+	.union([
+		// Wrapped format: { type?: string, data: { ... } }
+		z.object({
+			type: z.string().optional(),
+			data: orderCancelledDataSchema,
+			timestamp: z.string().optional(),
+		}).passthrough(),
+		// Direct format: { orderId, reason, ... }
+		orderCancelledDataSchema,
+	])
 	.transform((message) => {
 		// Normalize to consistent format
 		const data = message.data || message
@@ -127,29 +135,37 @@ const ProductDeletedSchema = z
 
 /**
  * Schema for PAYMENT_FAILED event (compensation)
+ * 
+ * Accepts two formats:
+ * 1. Wrapped: { type?: string, data: { orderId, reason, products, ... } }
+ * 2. Direct: { orderId, reason, products, ... }
  */
-const PaymentFailedSchema = z
-	.object({
-		type: z.string().optional(),
-		data: z
-			.object({
-				orderId: z.string().min(1, 'orderId is required'),
-				transactionId: z.string().optional(),
-				reason: z.string().optional(),
-				compensation: z.boolean().optional(),
-				products: z
-					.array(
-						z.object({
-							productId: z.string().min(1),
-							quantity: z.number().int().positive(),
-						})
-					)
-					.optional(),
+const paymentFailedDataSchema = z.object({
+	orderId: z.union([z.string(), z.any()]).transform(val => String(val)), // Accept ObjectId or string
+	transactionId: z.string().optional(),
+	reason: z.string().optional(),
+	compensation: z.boolean().optional(),
+	products: z
+		.array(
+			z.object({
+				productId: z.string().min(1),
+				quantity: z.number().int().positive(),
 			})
-			.passthrough(),
-		timestamp: z.string().optional(),
-	})
-	.passthrough()
+		)
+		.optional(),
+}).passthrough()
+
+const PaymentFailedSchema = z
+	.union([
+		// Wrapped format: { type?: string, data: { ... } }
+		z.object({
+			type: z.string().optional(),
+			data: paymentFailedDataSchema,
+			timestamp: z.string().optional(),
+		}).passthrough(),
+		// Direct format: { orderId, reason, products, ... }
+		paymentFailedDataSchema,
+	])
 	.transform((message) => {
 		const data = message.data || message
 		return {
