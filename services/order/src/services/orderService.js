@@ -1,5 +1,5 @@
 ﻿const mongoose = require('mongoose')
-const Order = require('../models/order')
+const orderRepository = require('../repositories/orderRepository')
 const logger = require('@ecommerce/logger')
 const { createOrderStateMachine } = require('./orderStateMachine')
 const { productClient } = require('../clients/productClient')
@@ -95,7 +95,7 @@ class OrderService {
 		session.startTransaction()
 
 		try {
-			const order = new Order({
+			const orderData = {
 				products: products.map((product, index) => ({
 					_id: product._id,
 					name: product.name,
@@ -107,9 +107,9 @@ class OrderService {
 				user: username,
 				totalPrice,
 				status: 'PENDING',
-			})
+			}
 
-			await order.save({ session })
+			const order = await orderRepository.create(orderData, session)
 			const orderId = order._id.toString()
 
 			if (!this.outboxManager) {
@@ -167,7 +167,7 @@ class OrderService {
 
 	async getOrderById(orderId) {
 		try {
-			return await Order.findById(orderId)
+			return await orderRepository.findById(orderId)
 		} catch (error) {
 			logger.error(
 				{ error: error.message, orderId },
@@ -186,7 +186,7 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVED'
 		)
 
-		const order = await Order.findById(payload.orderId)
+		const order = await orderRepository.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
@@ -208,8 +208,7 @@ class OrderService {
 				'[Order] Order already in final state, need to release this reserved inventory'
 			)
 
-			// ✅ FIX: If order is already CANCELLED, release this inventory immediately
-			// This handles race condition where INVENTORY_RESERVE_FAILED arrives before INVENTORY_RESERVED
+			// If order is already CANCELLED, release this inventory immediately
 			if (order.status === 'CANCELLED') {
 				const session = await mongoose.startSession()
 				try {
@@ -303,7 +302,7 @@ class OrderService {
 					throw error
 				}
 
-				await order.save({ session })
+				await orderRepository.save(order, session)
 			})
 		} finally {
 			session.endSession()
@@ -326,7 +325,7 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVE_FAILED'
 		)
 
-		const order = await Order.findById(payload.orderId)
+		const order = await orderRepository.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
@@ -375,7 +374,7 @@ class OrderService {
 					const failureReason = payload.reason || payload.message || 'Inventory reserve failed'
 					order.cancellationReason = failureReason
 
-					await order.save({ session })
+					await orderRepository.save(order, session)
 
 					logger.info(
 						{
@@ -387,8 +386,6 @@ class OrderService {
 						},
 						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
 					)
-
-					// No need to release inventory as the transaction in Inventory Service was rolled back
 
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_CANCELLED',
@@ -432,7 +429,7 @@ class OrderService {
 			'[Order] Processing PAYMENT_SUCCEEDED'
 		)
 
-		const order = await Order.findById(payload.orderId)
+		const order = await orderRepository.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
@@ -476,7 +473,7 @@ class OrderService {
 				try {
 					fsm.pay()
 					order.status = fsm.getState()
-					await order.save({ session })
+					await orderRepository.save(order, session)
 
 					logger.info(
 						{
@@ -535,7 +532,7 @@ class OrderService {
 			'[Order] Processing PAYMENT_FAILED'
 		)
 
-		const order = await Order.findById(payload.orderId)
+		const order = await orderRepository.findById(payload.orderId)
 		if (!order) {
 			logger.warn(
 				{ orderId: payload.orderId, correlationId },
@@ -580,7 +577,7 @@ class OrderService {
 					fsm.cancel()
 					order.status = fsm.getState()
 					order.cancellationReason = payload.reason || 'Payment failed'
-					await order.save({ session })
+					await orderRepository.save(order, session)
 
 					logger.info(
 						{

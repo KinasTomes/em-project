@@ -1,4 +1,4 @@
-const Payment = require('../models/payment')
+const paymentRepository = require('../repositories/paymentRepository')
 const logger = require('@ecommerce/logger')
 const mongoose = require('mongoose')
 
@@ -27,7 +27,7 @@ class PaymentService {
 	 */
 	async createOrGetPayment({ orderId, amount, currency, correlationId }) {
 		// Check if payment already exists (idempotency)
-		let payment = await Payment.findByOrderId(orderId)
+		let payment = await paymentRepository.findByOrderId(orderId)
 
 		if (payment) {
 			logger.info(
@@ -38,15 +38,13 @@ class PaymentService {
 		}
 
 		// Create new payment record
-		payment = new Payment({
+		payment = await paymentRepository.create({
 			orderId,
 			amount,
 			currency: currency || 'USD',
 			status: 'PENDING',
 			correlationId,
 		})
-
-		await payment.save()
 
 		logger.info(
 			{ orderId, paymentId: payment._id },
@@ -63,14 +61,14 @@ class PaymentService {
 	 * @returns {Promise<Payment>}
 	 */
 	async markAsProcessing(orderId) {
-		const payment = await Payment.findByOrderId(orderId)
+		const payment = await paymentRepository.findByOrderId(orderId)
 		if (!payment) {
 			throw new Error(`Payment not found for orderId: ${orderId}`)
 		}
 
 		payment.status = 'PROCESSING'
 		payment.attempts += 1
-		await payment.save()
+		await paymentRepository.save(payment)
 
 		logger.info(
 			{ orderId, attempts: payment.attempts },
@@ -95,7 +93,7 @@ class PaymentService {
 		session.startTransaction()
 
 		try {
-			const payment = await Payment.findByOrderId(orderId).session(session)
+			const payment = await paymentRepository.findByOrderId(orderId, session)
 			if (!payment) {
 				throw new Error(`Payment not found for orderId: ${orderId}`)
 			}
@@ -104,7 +102,7 @@ class PaymentService {
 			payment.transactionId = result.transactionId
 			payment.gatewayResponse = result.gatewayResponse || {}
 			payment.processedAt = new Date()
-			await payment.save({ session })
+			await paymentRepository.save(payment, session)
 
 			// Publish PAYMENT_SUCCEEDED via Outbox (transactional)
 			await this.outboxManager.createEvent({
@@ -164,7 +162,7 @@ class PaymentService {
 		session.startTransaction()
 
 		try {
-			const payment = await Payment.findByOrderId(orderId).session(session)
+			const payment = await paymentRepository.findByOrderId(orderId, session)
 			if (!payment) {
 				throw new Error(`Payment not found for orderId: ${orderId}`)
 			}
@@ -178,7 +176,7 @@ class PaymentService {
 				payment.addError(error)
 			}
 
-			await payment.save({ session })
+			await paymentRepository.save(payment, session)
 
 			// Publish PAYMENT_FAILED via Outbox (transactional)
 			await this.outboxManager.createEvent({
@@ -212,13 +210,13 @@ class PaymentService {
 			)
 
 			return payment
-		} catch (error) {
+		} catch (err) {
 			await session.abortTransaction()
 			logger.error(
-				{ error: error.message, orderId },
+				{ error: err.message, orderId },
 				'[PaymentService] Failed to mark payment as failed'
 			)
-			throw error
+			throw err
 		} finally {
 			session.endSession()
 		}
@@ -231,7 +229,7 @@ class PaymentService {
 	 * @returns {Promise<Payment|null>}
 	 */
 	async getPaymentByOrderId(orderId) {
-		return await Payment.findByOrderId(orderId)
+		return await paymentRepository.findByOrderId(orderId)
 	}
 
 	/**
@@ -242,7 +240,7 @@ class PaymentService {
 	 * @returns {Promise<object>}
 	 */
 	async getStatistics(startDate, endDate) {
-		return await Payment.getStatistics(startDate, endDate)
+		return await paymentRepository.getStatistics(startDate, endDate)
 	}
 
 	/**
@@ -253,9 +251,8 @@ class PaymentService {
 	 * @returns {Promise<Payment[]>}
 	 */
 	async findSucceededPayments(startDate, endDate) {
-		return await Payment.findSucceededInRange(startDate, endDate)
+		return await paymentRepository.findSucceededInRange(startDate, endDate)
 	}
 }
 
 module.exports = PaymentService
-
