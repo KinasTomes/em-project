@@ -29,7 +29,7 @@ module.exports = {
   rateLimiting: {
     general: {
       windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000, // 1 minute
-      maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+      maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
     },
     auth: {
       windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 60 * 1000, // 1 minute
