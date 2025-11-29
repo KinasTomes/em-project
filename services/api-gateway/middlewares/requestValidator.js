@@ -20,48 +20,10 @@ const defaultOptions = {
     'application/x-www-form-urlencoded',
     'multipart/form-data',
   ],
-  sanitizeBody: true,
+  // Removed sanitizeBody option; input validation only
 };
 
-/**
- * Sanitize string to prevent XSS
- */
-function sanitizeString(str) {
-  if (typeof str !== 'string') return str;
-  
-  return str
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-    .replace(/\//g, '&#x2F;');
-}
-
-/**
- * Recursively sanitize object values
- */
-function sanitizeObject(obj) {
-  if (obj === null || obj === undefined) return obj;
-  
-  if (typeof obj === 'string') {
-    return sanitizeString(obj);
-  }
-  
-  if (Array.isArray(obj)) {
-    return obj.map(sanitizeObject);
-  }
-  
-  if (typeof obj === 'object') {
-    const sanitized = {};
-    for (const [key, value] of Object.entries(obj)) {
-      sanitized[sanitizeString(key)] = sanitizeObject(value);
-    }
-    return sanitized;
-  }
-  
-  return obj;
-}
-
+// Removed sanitizeString and sanitizeObject functions; input validation only
 /**
  * Validate Content-Type header
  */
