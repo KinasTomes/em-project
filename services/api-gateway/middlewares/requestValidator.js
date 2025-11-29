@@ -199,10 +199,12 @@ function bodyParser(options = {}) {
 
     req.on('error', (error) => {
       logger.error({ error: error.message }, '✗ Request error');
-      res.status(400).json({
-        error: 'Bad Request',
-        message: 'Error reading request body',
-      });
+      if (!res.headersSent) {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: 'Error reading request body',
+        });
+      }
     });
   };
 }
