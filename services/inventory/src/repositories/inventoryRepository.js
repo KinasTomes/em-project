@@ -190,12 +190,60 @@ class InventoryRepository {
 
   /**
    * Atomically reserve stock for multiple products in a single operation
+   * Uses optimistic approach - check availability BEFORE bulkWrite to avoid race condition
    * @param {Array<{productId: string, quantity: number}>} products
    * @param {Object} session - MongoDB session for transaction
-   * @returns {Object} { success: boolean, failedProduct?: string }
+   * @returns {Object} { success: boolean, failedProduct?: string, previousValues?: Object }
    */
   async reserveStockBatch(products, session = null) {
     try {
+      const options = session ? { session } : {};
+      
+      // STEP 1: Pre-check availability atomically within the same session/transaction
+      // This prevents the race condition where we check after bulkWrite fails
+      const productIds = products.map(p => normalizeProductId(p.productId));
+      const currentInventories = await Inventory.find(
+        { productId: { $in: productIds } },
+        null,
+        options
+      );
+
+      // Build a map for quick lookup
+      const inventoryMap = new Map();
+      for (const inv of currentInventories) {
+        inventoryMap.set(inv.productId.toString(), inv);
+      }
+
+      // Check each product has sufficient stock
+      const previousValues = {};
+      for (const { productId, quantity } of products) {
+        const normalizedId = normalizeProductId(productId).toString();
+        const inventory = inventoryMap.get(normalizedId);
+        
+        if (!inventory) {
+          return {
+            success: false,
+            failedProduct: productId,
+            message: `Inventory not found for product ${productId}`
+          };
+        }
+
+        if (inventory.available < quantity) {
+          return {
+            success: false,
+            failedProduct: productId,
+            message: `Insufficient stock for product ${productId}. Available: ${inventory.available}, Requested: ${quantity}`
+          };
+        }
+
+        // Store previous values for audit log
+        previousValues[productId] = {
+          available: inventory.available,
+          reserved: inventory.reserved,
+        };
+      }
+
+      // STEP 2: All checks passed, perform the atomic update
       const operations = products.map(({ productId, quantity }) => ({
         updateOne: {
           filter: {
@@ -208,30 +256,22 @@ class InventoryRepository {
         }
       }));
 
-      const options = session ? { session } : {};
       const result = await Inventory.bulkWrite(operations, options);
 
-      // Check if all operations succeeded
+      // Verify all operations succeeded
       if (result.modifiedCount !== products.length) {
-        // Find which product failed
-        for (const { productId, quantity } of products) {
-          const inventory = await this.findByProductId(productId);
-          if (!inventory || inventory.available < quantity) {
-            return {
-              success: false,
-              failedProduct: productId,
-              message: `Insufficient stock for product ${productId}. Available: ${inventory?.available || 0}, Requested: ${quantity}`
-            };
-          }
-        }
-        // If we can't find the specific failure, return generic error
+        // This should rarely happen since we pre-checked, but handle it
         return {
           success: false,
-          message: `Batch reserve failed: ${result.modifiedCount}/${products.length} products updated`
+          message: `Batch reserve partially failed: ${result.modifiedCount}/${products.length} products updated (concurrent modification detected)`
         };
       }
 
-      return { success: true, modifiedCount: result.modifiedCount };
+      return { 
+        success: true, 
+        modifiedCount: result.modifiedCount,
+        previousValues, // Return for audit logging
+      };
     } catch (error) {
       logger.error(
         `[InventoryRepository] Error in batch reserve: ${error.message}`
@@ -239,6 +279,70 @@ class InventoryRepository {
       throw error;
     }
   }
+
+  /**
+   * Atomically release stock for multiple products
+   * @param {Array<{productId: string, quantity: number}>} products
+   * @param {Object} session - MongoDB session for transaction
+   * @returns {Object} { success: boolean, previousValues?: Object }
+   */
+  async releaseStockBatch(products, session = null) {
+    try {
+      const options = session ? { session } : {};
+      
+      // Get current values for audit log
+      const productIds = products.map(p => normalizeProductId(p.productId));
+      const currentInventories = await Inventory.find(
+        { productId: { $in: productIds } },
+        null,
+        options
+      );
+
+      const inventoryMap = new Map();
+      for (const inv of currentInventories) {
+        inventoryMap.set(inv.productId.toString(), inv);
+      }
+
+      const previousValues = {};
+      for (const { productId } of products) {
+        const normalizedId = normalizeProductId(productId).toString();
+        const inventory = inventoryMap.get(normalizedId);
+        if (inventory) {
+          previousValues[productId] = {
+            available: inventory.available,
+            reserved: inventory.reserved,
+          };
+        }
+      }
+
+      const operations = products.map(({ productId, quantity }) => ({
+        updateOne: {
+          filter: {
+            productId: normalizeProductId(productId),
+            reserved: { $gte: quantity }
+          },
+          update: {
+            $inc: { available: quantity, reserved: -quantity }
+          }
+        }
+      }));
+
+      const result = await Inventory.bulkWrite(operations, options);
+
+      return { 
+        success: true, 
+        modifiedCount: result.modifiedCount,
+        previousValues,
+      };
+    } catch (error) {
+      logger.error(
+        `[InventoryRepository] Error in batch release: ${error.message}`
+      );
+      throw error;
+    }
+  }
 }
+
+module.exports = new InventoryRepository();
 
 module.exports = new InventoryRepository();

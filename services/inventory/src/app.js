@@ -5,6 +5,8 @@ const config = require('./config')
 const inventoryRoutes = require('./routes/inventoryRoutes')
 const { registerInventoryConsumer } = require('./consumers/inventoryConsumer')
 const IdempotencyService = require('./services/idempotencyService')
+const DistributedLockService = require('./services/distributedLockService')
+const { setDistributedLockService } = require('./services/inventoryService')
 
 let Broker
 let OutboxManager
@@ -16,6 +18,7 @@ class App {
 		this.broker = null
 		this.outboxManager = null
 		this.idempotencyService = new IdempotencyService(config.redisUrl)
+		this.distributedLockService = new DistributedLockService(config.redisUrl)
 	}
 
 	setMiddlewares() {
@@ -111,6 +114,11 @@ class App {
 		// Initialize idempotency service
 		await this.idempotencyService.connect()
 
+		// Initialize distributed lock service and inject into inventoryService
+		await this.distributedLockService.connect()
+		setDistributedLockService(this.distributedLockService)
+		logger.info('✓ [Inventory] Distributed lock service initialized')
+
 		// Register inventory consumer with outboxManager and idempotencyService
 		await registerInventoryConsumer(this.broker, this.outboxManager, this.idempotencyService)
 	}
@@ -133,6 +141,11 @@ class App {
 		if (this.idempotencyService) {
 			await this.idempotencyService.close()
 			logger.info('✓ [Inventory] Idempotency service closed')
+		}
+
+		if (this.distributedLockService) {
+			await this.distributedLockService.close()
+			logger.info('✓ [Inventory] Distributed lock service closed')
 		}
 
 		if (this.broker) {

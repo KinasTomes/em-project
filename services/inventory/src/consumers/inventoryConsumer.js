@@ -34,7 +34,10 @@ async function handleOrderCreated(message, metadata = {}) {
 	session.startTransaction()
 
 	try {
-		const result = await inventoryService.reserveStockBatch(products, session)
+		const result = await inventoryService.reserveStockBatch(products, session, {
+			orderId,
+			correlationId: correlatedId,
+		})
 
 		if (result.success) {
 			await outboxManager.createEvent({
@@ -176,7 +179,8 @@ async function handleOrderCancelled(message, metadata = {}) {
 			try {
 				await inventoryService.releaseReserved(
 					product.productId,
-					product.quantity
+					product.quantity,
+					{ orderId, correlationId, reason: 'ORDER_CANCEL' }
 				)
 				logger.info(
 					{
@@ -284,7 +288,8 @@ async function handlePaymentFailed(message, metadata = {}) {
 			try {
 				await inventoryService.releaseReserved(
 					product.productId,
-					product.quantity
+					product.quantity,
+					{ orderId, correlationId, reason: 'PAYMENT_FAILED' }
 				)
 				logger.info(
 					{

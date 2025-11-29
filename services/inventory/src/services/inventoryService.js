@@ -1,9 +1,22 @@
 const inventoryRepository = require("../repositories/inventoryRepository");
+const auditLogRepository = require("../repositories/auditLogRepository");
 const logger = require("@ecommerce/logger");
 const mongoose = require("mongoose");
 
+// Distributed lock service (injected from app.js)
+let distributedLockService = null;
+
+/**
+ * Set the distributed lock service instance
+ * @param {DistributedLockService} lockService
+ */
+function setDistributedLockService(lockService) {
+  distributedLockService = lockService;
+}
+
 /**
  * Service layer for inventory business logic
+ * Includes distributed locking and audit logging
  */
 class InventoryService {
   /**
@@ -79,26 +92,60 @@ class InventoryService {
   }
 
   /**
-   * Reserve inventory for an order
+   * Reserve inventory for an order (single product)
+   * Uses distributed lock to prevent race conditions across instances
+   * @param {string} productId
+   * @param {number} quantity
+   * @param {Object} options - { orderId, correlationId }
    * @returns {Object} { success: boolean, inventory: Object }
    */
-  async reserveStock(productId, quantity) {
-    try {
-      // Use an atomic reserve operation to prevent race conditions
+  async reserveStock(productId, quantity, options = {}) {
+    const { orderId, correlationId } = options;
+
+    // Use distributed lock if available
+    const executeReserve = async () => {
+      // Get current state for audit
+      const current = await inventoryRepository.findByProductId(productId);
+      if (!current) {
+        return {
+          success: false,
+          message: `Inventory not found for product ${productId}`,
+          inventory: null,
+        };
+      }
+
+      const previousValue = {
+        available: current.available,
+        reserved: current.reserved,
+      };
+
+      // Use an atomic reserve operation
       const updated = await inventoryRepository.reserveIfAvailable(
         productId,
         quantity
       );
 
       if (!updated) {
-        const current = await inventoryRepository.findByProductId(productId);
         return {
           success: false,
-          message: `Insufficient stock. Available: ${current ? current.available : 0
-            }, Requested: ${quantity}`,
+          message: `Insufficient stock. Available: ${current.available}, Requested: ${quantity}`,
           inventory: current,
         };
       }
+
+      // Create audit log
+      await auditLogRepository.create({
+        productId,
+        action: 'RESERVE',
+        previousValue,
+        newValue: {
+          available: updated.available,
+          reserved: updated.reserved,
+        },
+        reason: 'ORDER_RESERVE',
+        orderId,
+        correlationId,
+      });
 
       logger.info(
         `[InventoryService] Reserved ${quantity} units for product ${productId}`
@@ -109,6 +156,18 @@ class InventoryService {
         message: `Successfully reserved ${quantity} units`,
         inventory: updated,
       };
+    };
+
+    try {
+      if (distributedLockService) {
+        return await distributedLockService.withLock(
+          'product',
+          productId,
+          executeReserve,
+          5000 // 5 second lock TTL
+        );
+      }
+      return await executeReserve();
     } catch (error) {
       logger.error(
         `[InventoryService] Error reserving stock: ${error.message}`
@@ -119,31 +178,60 @@ class InventoryService {
 
   /**
    * Reserve inventory for multiple products in a single batch operation
+   * Uses distributed lock for the entire batch to prevent race conditions
    * @param {Array<{productId: string, quantity: number}>} products
    * @param {Object} externalSession - Optional external MongoDB session for transactional outbox
+   * @param {Object} options - { orderId, correlationId }
    */
-  async reserveStockBatch(products, externalSession = null) {
+  async reserveStockBatch(products, externalSession = null, options = {}) {
+    const { orderId, correlationId } = options;
+
+    const executeReserveBatch = async (session) => {
+      const result = await inventoryRepository.reserveStockBatch(products, session);
+
+      if (!result.success) {
+        return {
+          success: false,
+          message: result.message,
+        };
+      }
+
+      // Create audit logs for each product
+      if (result.previousValues) {
+        for (const { productId, quantity } of products) {
+          const prev = result.previousValues[productId];
+          if (prev) {
+            await auditLogRepository.create({
+              productId,
+              action: 'RESERVE',
+              previousValue: prev,
+              newValue: {
+                available: prev.available - quantity,
+                reserved: prev.reserved + quantity,
+              },
+              reason: 'ORDER_RESERVE',
+              orderId,
+              correlationId,
+            }, session);
+          }
+        }
+      }
+
+      logger.info(
+        `[InventoryService] Successfully reserved stock for ${products.length} products`
+      );
+
+      return {
+        success: true,
+        message: `All ${products.length} products reserved successfully`,
+        modifiedCount: result.modifiedCount
+      };
+    };
+
     // If external session provided, use it (for transactional outbox)
     if (externalSession) {
       try {
-        const result = await inventoryRepository.reserveStockBatch(products, externalSession);
-
-        if (!result.success) {
-          return {
-            success: false,
-            message: result.message,
-          };
-        }
-
-        logger.info(
-          `[InventoryService] Successfully reserved stock for ${products.length} products (external session)`
-        );
-
-        return {
-          success: true,
-          message: `All ${products.length} products reserved successfully`,
-          modifiedCount: result.modifiedCount
-        };
+        return await executeReserveBatch(externalSession);
       } catch (error) {
         logger.warn(
           `[InventoryService] Batch reservation failed: ${error.message}`
@@ -155,28 +243,20 @@ class InventoryService {
       }
     }
 
-    // Otherwise, create own session (backward compatibility)
+    // Otherwise, create own session with distributed lock
     const session = await mongoose.startSession();
     session.startTransaction();
+    
     try {
-      // Use single bulkWrite operation instead of N queries
-      const result = await inventoryRepository.reserveStockBatch(products, session);
+      const result = await executeReserveBatch(session);
 
       if (!result.success) {
-        throw new Error(result.message);
+        await session.abortTransaction();
+        return result;
       }
 
       await session.commitTransaction();
-
-      logger.info(
-        `[InventoryService] Successfully reserved stock for ${products.length} products in single batch operation`
-      );
-
-      return {
-        success: true,
-        message: `All ${products.length} products reserved successfully`,
-        modifiedCount: result.modifiedCount
-      };
+      return result;
     } catch (error) {
       await session.abortTransaction();
       logger.warn(
@@ -193,9 +273,15 @@ class InventoryService {
 
   /**
    * Release reserved inventory (e.g., when order is cancelled)
+   * Uses distributed lock and creates audit log
+   * @param {string} productId
+   * @param {number} quantity
+   * @param {Object} options - { orderId, correlationId, reason }
    */
-  async releaseReserved(productId, quantity) {
-    try {
+  async releaseReserved(productId, quantity, options = {}) {
+    const { orderId, correlationId, reason = 'ORDER_CANCEL' } = options;
+
+    const executeRelease = async () => {
       const inventory = await inventoryRepository.findByProductId(productId);
 
       if (!inventory) {
@@ -208,6 +294,11 @@ class InventoryService {
         );
       }
 
+      const previousValue = {
+        available: inventory.available,
+        reserved: inventory.reserved,
+      };
+
       // Release reserved stock back to available
       const updated = await inventoryRepository.updateByProductId(productId, {
         $inc: {
@@ -216,10 +307,36 @@ class InventoryService {
         },
       });
 
+      // Create audit log
+      await auditLogRepository.create({
+        productId,
+        action: 'RELEASE',
+        previousValue,
+        newValue: {
+          available: updated.available,
+          reserved: updated.reserved,
+        },
+        reason,
+        orderId,
+        correlationId,
+      });
+
       logger.info(
         `[InventoryService] Released ${quantity} reserved units for product ${productId}`
       );
       return updated;
+    };
+
+    try {
+      if (distributedLockService) {
+        return await distributedLockService.withLock(
+          'product',
+          productId,
+          executeRelease,
+          5000
+        );
+      }
+      return await executeRelease();
     } catch (error) {
       logger.error(
         `[InventoryService] Error releasing reserved stock: ${error.message}`
@@ -266,8 +383,13 @@ class InventoryService {
 
   /**
    * Restock inventory (add stock)
+   * @param {string} productId
+   * @param {number} quantity
+   * @param {Object} options - { userId, correlationId }
    */
-  async restockInventory(productId, quantity) {
+  async restockInventory(productId, quantity, options = {}) {
+    const { userId, correlationId } = options;
+
     try {
       if (quantity <= 0) {
         throw new Error("Restock quantity must be greater than 0");
@@ -279,10 +401,29 @@ class InventoryService {
         throw new Error("Inventory not found for this product");
       }
 
+      const previousValue = {
+        available: inventory.available,
+        reserved: inventory.reserved,
+      };
+
       // Add to available stock
       const updated = await inventoryRepository.updateByProductId(productId, {
         $inc: { available: quantity },
         lastRestockedAt: new Date(),
+      });
+
+      // Create audit log
+      await auditLogRepository.create({
+        productId,
+        action: 'RESTOCK',
+        previousValue,
+        newValue: {
+          available: updated.available,
+          reserved: updated.reserved,
+        },
+        reason: 'MANUAL_RESTOCK',
+        userId,
+        correlationId,
       });
 
       logger.info(
@@ -297,8 +438,14 @@ class InventoryService {
 
   /**
    * Adjust inventory (manual adjustment by admin)
+   * @param {string} productId
+   * @param {number} availableDelta
+   * @param {number} reservedDelta
+   * @param {Object} options - { userId, correlationId, metadata }
    */
-  async adjustInventory(productId, availableDelta, reservedDelta = 0) {
+  async adjustInventory(productId, availableDelta, reservedDelta = 0, options = {}) {
+    const { userId, correlationId, metadata } = options;
+
     try {
       const inventory = await inventoryRepository.findByProductId(productId);
 
@@ -313,11 +460,31 @@ class InventoryService {
         throw new Error("Adjustment would result in negative stock");
       }
 
+      const previousValue = {
+        available: inventory.available,
+        reserved: inventory.reserved,
+      };
+
       const updated = await inventoryRepository.updateByProductId(productId, {
         $inc: {
           available: availableDelta,
           reserved: reservedDelta,
         },
+      });
+
+      // Create audit log
+      await auditLogRepository.create({
+        productId,
+        action: 'ADJUST',
+        previousValue,
+        newValue: {
+          available: updated.available,
+          reserved: updated.reserved,
+        },
+        reason: 'MANUAL_ADJUST',
+        userId,
+        correlationId,
+        metadata,
       });
 
       logger.info(
@@ -409,6 +576,19 @@ class InventoryService {
       if (!inventory) {
         throw new Error("Inventory not found for this product");
       }
+
+      // Create audit log for deletion
+      await auditLogRepository.create({
+        productId,
+        action: 'DELETE',
+        previousValue: {
+          available: inventory.available,
+          reserved: inventory.reserved,
+        },
+        newValue: { available: 0, reserved: 0 },
+        reason: 'PRODUCT_DELETED',
+      });
+
       logger.info(
         `[InventoryService] Deleted inventory for product ${productId}`
       );
@@ -420,6 +600,40 @@ class InventoryService {
       throw error;
     }
   }
+
+  /**
+   * Get audit history for a product
+   * @param {string} productId
+   * @param {number} limit
+   */
+  async getAuditHistory(productId, limit = 100) {
+    try {
+      return await auditLogRepository.getProductHistory(productId, limit);
+    } catch (error) {
+      logger.error(
+        `[InventoryService] Error getting audit history: ${error.message}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get audit history for an order
+   * @param {string} orderId
+   */
+  async getOrderAuditHistory(orderId) {
+    try {
+      return await auditLogRepository.getOrderHistory(orderId);
+    } catch (error) {
+      logger.error(
+        `[InventoryService] Error getting order audit history: ${error.message}`
+      );
+      throw error;
+    }
+  }
 }
 
-module.exports = new InventoryService();
+const inventoryService = new InventoryService();
+
+module.exports = inventoryService;
+module.exports.setDistributedLockService = setDistributedLockService;
