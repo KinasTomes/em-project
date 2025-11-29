@@ -7,23 +7,17 @@ const logger = require('@ecommerce/logger')
 class App {
 	constructor() {
 		this.app = express()
-		this.connectDB()
-		this.setMiddlewares()
-		this.setRoutes()
+		this.server = null
 	}
 
 	async connectDB() {
-		await mongoose.connect(config.mongoURI, {
-			useNewUrlParser: true,
-			useUnifiedTopology: true,
-		})
-		console.log('✓ [Product] MongoDB connected')
-		logger.info({ mongoURI: config.mongoURI }, 'MongoDB connected')
+		await mongoose.connect(config.mongoURI)
+		logger.info({ mongoURI: config.mongoURI }, '✓ [Product] MongoDB connected')
 	}
 
 	async disconnectDB() {
 		await mongoose.disconnect()
-		console.log('MongoDB disconnected')
+		logger.info('✓ [Product] MongoDB disconnected')
 	}
 
 	setMiddlewares() {
@@ -32,21 +26,35 @@ class App {
 	}
 
 	setRoutes() {
+		// Health check endpoint
+		this.app.get('/health', (req, res) => {
+			res.status(200).json({
+				status: 'healthy',
+				service: 'product',
+				timestamp: new Date().toISOString(),
+			})
+		})
+
 		this.app.use('/api/products', productsRouter)
 	}
 
-	start() {
+	async start() {
+		await this.connectDB()
+		this.setMiddlewares()
+		this.setRoutes()
+
 		this.server = this.app.listen(config.port, () => {
-			console.log(`✓ [Product] Server started on port ${config.port}`)
-			console.log(`✓ [Product] Ready`)
-			logger.info({ port: config.port }, 'Product service ready')
+			logger.info({ port: config.port }, '✓ [Product] Server listening')
 		})
 	}
 
 	async stop() {
-		await mongoose.disconnect()
-		this.server.close()
-		console.log('Server stopped')
+		await this.disconnectDB()
+
+		if (this.server) {
+			this.server.close()
+			logger.info('✓ [Product] Server stopped')
+		}
 	}
 }
 

@@ -11,5 +11,21 @@ const logger = require("@ecommerce/logger");
 
 const app = new App();
 
-logger.info("Starting product service...");
-app.start();
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+	logger.info('SIGTERM received, shutting down gracefully...')
+	await app.stop()
+	process.exit(0)
+})
+
+process.on('SIGINT', async () => {
+	logger.info('SIGINT received, shutting down gracefully...')
+	await app.stop()
+	process.exit(0)
+})
+
+// Start the application
+app.start().catch((error) => {
+	logger.error({ error: error.message }, '❌ Failed to start Product service')
+	process.exit(1)
+});

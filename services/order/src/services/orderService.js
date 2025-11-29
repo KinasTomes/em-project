@@ -178,6 +178,21 @@ class OrderService {
 	}
 
 	/**
+	 * Get orders by user with pagination
+	 */
+	async getOrdersByUser(username, page = 1, limit = 20) {
+		try {
+			return await orderRepository.findByUser(username, page, limit)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, username },
+				'Failed to get orders by user'
+			)
+			throw error
+		}
+	}
+
+	/**
 	 * Handle INVENTORY_RESERVED event
 	 */
 	async handleInventoryReserved(payload, correlationId) {

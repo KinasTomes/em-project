@@ -1,0 +1,17 @@
+sync:
+  defaults:
+    mode: "two-way-resolved"
+    ignore:
+      vcs: true
+      paths:
+        # Dùng **/ để chặn node_modules ở tất cả các thư mục con (services/order, services/auth...)
+        - "**/node_modules"
+        
+        # Các file rác khác
+        - ".idea"
+        - ".vscode"
+        - "*.log"
+        - "dist"
+        - "build"
+        - "coverage"
+        - ".DS_Store"

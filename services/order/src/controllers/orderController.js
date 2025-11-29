@@ -5,6 +5,7 @@ class OrderController {
 		this.orderService = orderService
 		this.createOrder = this.createOrder.bind(this)
 		this.getOrderById = this.getOrderById.bind(this)
+		this.getMyOrders = this.getMyOrders.bind(this)
 	}
 
 	/**
@@ -82,6 +83,45 @@ class OrderController {
 			})
 		} catch (error) {
 			logger.error({ error: error.message }, 'Failed to fetch order')
+			return res.status(500).json({ message: 'Server error' })
+		}
+	}
+
+	/**
+	 * GET /api/orders
+	 * Return list of orders for current user with pagination
+	 */
+	async getMyOrders(req, res) {
+		try {
+			const token = req.headers.authorization
+			if (!token) {
+				return res.status(401).json({ message: 'Unauthorized' })
+			}
+
+			const username = req.user.username
+			const page = parseInt(req.query.page) || 1
+			const limit = parseInt(req.query.limit) || 20
+
+			const result = await this.orderService.getOrdersByUser(username, page, limit)
+
+			return res.status(200).json({
+				orders: result.items.map((order) => ({
+					orderId: order._id,
+					products: order.products,
+					totalPrice: order.totalPrice,
+					status: order.status,
+					cancellationReason: order.cancellationReason,
+					createdAt: order.createdAt,
+				})),
+				pagination: {
+					total: result.total,
+					page: result.page,
+					pages: result.pages,
+					limit,
+				},
+			})
+		} catch (error) {
+			logger.error({ error: error.message }, 'Failed to fetch orders')
 			return res.status(500).json({ message: 'Server error' })
 		}
 	}
