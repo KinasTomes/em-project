@@ -13,7 +13,12 @@ module.exports = {
   paymentServiceUrl: process.env.PAYMENT_SERVICE_URL || "http://localhost:3006",
   
   // JWT Configuration
-  jwtSecret: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
+  jwtSecret: (() => {
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET environment variable must be set for secure operation.");
+    }
+    return process.env.JWT_SECRET;
+  })(),
   
   // CORS Configuration
   corsOrigins: process.env.CORS_ORIGINS 
