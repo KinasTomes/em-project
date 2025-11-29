@@ -35,8 +35,6 @@ const {
   createValidator,
   bodyParser,
   validateBody,
-  sanitizeString,
-  sanitizeObject,
   generateRequestId,
   schemas,
 } = require('./requestValidator');
@@ -70,8 +68,6 @@ module.exports = {
   createValidator,
   bodyParser,
   validateBody,
-  sanitizeString,
-  sanitizeObject,
   generateRequestId,
   schemas,
 };

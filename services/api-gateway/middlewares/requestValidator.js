@@ -104,7 +104,6 @@ function generateRequestId() {
  */
 function bodyParser(options = {}) {
   const maxSize = options.maxSize || defaultOptions.maxBodySize;
-  const sanitize = options.sanitize ?? defaultOptions.sanitizeBody;
 
   return (req, res, next) => {
     // Skip for requests without body
@@ -142,11 +141,6 @@ function bodyParser(options = {}) {
       if (body) {
         try {
           req.body = JSON.parse(body);
-          
-          // Sanitize body if enabled
-          if (sanitize) {
-            req.body = sanitizeObject(req.body);
-          }
         } catch (error) {
           logger.warn({ error: error.message }, '✗ Invalid JSON body');
           return res.status(400).json({
@@ -237,8 +231,6 @@ module.exports = {
   createValidator,
   bodyParser,
   validateBody,
-  sanitizeString,
-  sanitizeObject,
   generateRequestId,
   schemas,
   defaultOptions,
