@@ -3,9 +3,8 @@
  * 
  * Validates incoming requests at the API Gateway level:
  * - Content-Type validation
- * - Body size limits
- * - Basic input sanitization
- * - Request structure validation
+ * - URL length validation
+ * - Request ID generation
  */
 
 const logger = require('@ecommerce/logger');
