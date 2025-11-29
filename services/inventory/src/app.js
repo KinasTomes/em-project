@@ -6,7 +6,7 @@ const inventoryRoutes = require('./routes/inventoryRoutes')
 const { registerInventoryConsumer } = require('./consumers/inventoryConsumer')
 const IdempotencyService = require('./services/idempotencyService')
 const DistributedLockService = require('./services/distributedLockService')
-const { setDistributedLockService } = require('./services/inventoryService')
+const { setLockService } = require('./utils/lockExecutor')
 
 let Broker
 let OutboxManager
@@ -114,9 +114,9 @@ class App {
 		// Initialize idempotency service
 		await this.idempotencyService.connect()
 
-		// Initialize distributed lock service and inject into inventoryService
+		// Initialize distributed lock service and inject into lockExecutor
 		await this.distributedLockService.connect()
-		setDistributedLockService(this.distributedLockService)
+		setLockService(this.distributedLockService)
 		logger.info('✓ [Inventory] Distributed lock service initialized')
 
 		// Register inventory consumer with outboxManager and idempotencyService
