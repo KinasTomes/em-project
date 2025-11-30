@@ -24,6 +24,9 @@ class App {
 	}
 
 	setMiddlewares() {
+		// Metrics middleware (must be early in chain)
+		this.app.use(metricsMiddleware('order-service'))
+		
 		this.app.use(express.json())
 		this.app.use(express.urlencoded({ extended: false }))
 	}
@@ -48,6 +51,9 @@ class App {
 		if (!this.outboxManager) {
 			throw new Error('OutboxManager not initialized')
 		}
+
+		// Metrics endpoint
+		this.app.get('/metrics', metricsHandler)
 
 		// Initialize orderService as instance variable for use in event handlers
 		this.orderService = new OrderService(this.outboxManager)

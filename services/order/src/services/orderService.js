@@ -3,6 +3,17 @@ const orderRepository = require('../repositories/orderRepository')
 const logger = require('@ecommerce/logger')
 const { createOrderStateMachine } = require('./orderStateMachine')
 const { productClient } = require('../clients/productClient')
+const {
+	recordOrderCreated,
+	recordStateTransition,
+	recordSagaOperation,
+	recordOrderValue,
+	recordOrderOperation,
+	recordEventProcessing,
+	startEventProcessingTimer,
+	startProductValidationTimer,
+	updateCircuitBreakerFromStats
+} = require('../metrics')
 
 class OrderService {
 	constructor(outboxManager) {
@@ -14,6 +25,7 @@ class OrderService {
 	 * Uses circuit breaker for resilient HTTP calls.
 	 */
 	async validateProducts(productIds, token) {
+		const endTimer = startProductValidationTimer()
 		try {
 			const authHeader =
 				token && token.startsWith('Bearer ') ? token : `Bearer ${token}`
@@ -30,9 +42,13 @@ class OrderService {
 			if (validProducts.length !== productIds.length) {
 				const foundIds = validProducts.map((product) => product._id.toString())
 				const missingIds = productIds.filter((id) => !foundIds.includes(id))
+				endTimer('failed')
 				throw new Error(`Products not found: ${missingIds.join(', ')}`)
 			}
 
+			// Update circuit breaker metrics
+			updateCircuitBreakerFromStats(productClient.getStats())
+			endTimer('success')
 			return validProducts
 		} catch (error) {
 			// Handle circuit breaker specific errors
@@ -41,6 +57,8 @@ class OrderService {
 					{ productIds, circuitState: 'OPEN' },
 					'Product Service is unavailable (circuit breaker open)'
 				)
+				updateCircuitBreakerFromStats(productClient.getStats())
+				endTimer('circuit_open')
 				throw new Error(
 					'Product Service is temporarily unavailable. Please try again later.'
 				)
@@ -51,6 +69,7 @@ class OrderService {
 					{ productIds, timeout: 3000 },
 					'Product Service request timed out'
 				)
+				endTimer('timeout')
 				throw new Error(
 					'Product Service is taking too long to respond. Please try again.'
 				)
@@ -61,6 +80,7 @@ class OrderService {
 				{ error: error.message, productIds, code: error.code },
 				'Failed to validate products'
 			)
+			endTimer('failed')
 			throw error
 		}
 	}
@@ -141,6 +161,11 @@ class OrderService {
 				'Order created via transactional outbox'
 			)
 
+			// Record metrics
+			recordOrderCreated('pending')
+			recordOrderValue(totalPrice, 'USD', 'created')
+			recordSagaOperation('order_flow', 'create', 'success')
+
 			return {
 				orderId,
 				message: 'Order created and reservation requests queued',
@@ -159,6 +184,8 @@ class OrderService {
 				{ error: error.message, username },
 				'Failed to create order, transaction rolled back'
 			)
+			recordOrderCreated('failed')
+			recordSagaOperation('order_flow', 'create', 'failed')
 			throw error
 		} finally {
 			session.endSession()
@@ -196,6 +223,7 @@ class OrderService {
 	 * Handle INVENTORY_RESERVED event
 	 */
 	async handleInventoryReserved(payload, correlationId) {
+		const endTimer = startEventProcessingTimer('inventory_reserved')
 		logger.info(
 			{ orderId: payload.orderId, productId: payload.productId, correlationId },
 			'[Order] Processing INVENTORY_RESERVED'
@@ -207,6 +235,8 @@ class OrderService {
 				{ orderId: payload.orderId, correlationId },
 				'[Order] Order not found for INVENTORY_RESERVED'
 			)
+			endTimer()
+			recordEventProcessing('inventory_reserved', 'skipped')
 			return
 		}
 
@@ -254,12 +284,15 @@ class OrderService {
 							},
 							'[Order] Released inventory for cancelled order (race condition compensation)'
 						)
+						recordSagaOperation('order_flow', 'reserve', 'compensated')
 					})
 				} finally {
 					session.endSession()
 				}
 			}
 
+			endTimer()
+			recordEventProcessing('inventory_reserved', 'skipped')
 			return
 		}
 
@@ -285,6 +318,11 @@ class OrderService {
 						},
 						'[Order] Order status updated to CONFIRMED (all inventory reserved)'
 					)
+
+					// Record state transition metrics
+					recordStateTransition('PENDING', 'CONFIRMED', 'inventory_reserved')
+					recordSagaOperation('order_flow', 'reserve', 'success')
+					recordOrderValue(order.totalPrice, 'USD', 'confirmed')
 
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_CONFIRMED',
@@ -314,11 +352,16 @@ class OrderService {
 						},
 						'[Order] Invalid state transition for INVENTORY_RESERVED'
 					)
+					endTimer()
+					recordEventProcessing('inventory_reserved', 'failed')
 					throw error
 				}
 
 				await orderRepository.save(order, session)
 			})
+
+			endTimer()
+			recordEventProcessing('inventory_reserved', 'success')
 		} finally {
 			session.endSession()
 		}
@@ -329,6 +372,7 @@ class OrderService {
 	 * Includes compensation logic for partial failures
 	 */
 	async handleInventoryReserveFailed(payload, correlationId) {
+		const endTimer = startEventProcessingTimer('inventory_reserve_failed')
 		logger.warn(
 			{
 				orderId: payload.orderId,
@@ -346,6 +390,8 @@ class OrderService {
 				{ orderId: payload.orderId, correlationId },
 				'[Order] Order not found for INVENTORY_RESERVE_FAILED'
 			)
+			endTimer()
+			recordEventProcessing('inventory_reserve_failed', 'skipped')
 			return
 		}
 
@@ -375,6 +421,8 @@ class OrderService {
 				},
 				'[Order] Order already in final state, skipping transition'
 			)
+			endTimer()
+			recordEventProcessing('inventory_reserve_failed', 'skipped')
 			return
 		}
 
@@ -402,6 +450,11 @@ class OrderService {
 						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
 					)
 
+					// Record state transition and saga metrics
+					recordStateTransition('PENDING', 'CANCELLED', 'inventory_failed')
+					recordSagaOperation('order_flow', 'reserve', 'failed')
+					recordOrderValue(order.totalPrice, 'USD', 'cancelled')
+
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_CANCELLED',
 						payload: {
@@ -423,9 +476,14 @@ class OrderService {
 						},
 						'[Order] Invalid state transition for INVENTORY_RESERVE_FAILED'
 					)
+					endTimer()
+					recordEventProcessing('inventory_reserve_failed', 'failed')
 					throw error
 				}
 			})
+
+			endTimer()
+			recordEventProcessing('inventory_reserve_failed', 'success')
 		} finally {
 			session.endSession()
 		}
@@ -435,6 +493,7 @@ class OrderService {
 	 * Handle PAYMENT_SUCCEEDED event
 	 */
 	async handlePaymentSucceeded(payload, correlationId) {
+		const endTimer = startEventProcessingTimer('payment_succeeded')
 		logger.info(
 			{
 				orderId: payload.orderId,
@@ -450,6 +509,8 @@ class OrderService {
 				{ orderId: payload.orderId, correlationId },
 				'[Order] Order not found for PAYMENT_SUCCEEDED'
 			)
+			endTimer()
+			recordEventProcessing('payment_succeeded', 'skipped')
 			return
 		}
 
@@ -464,6 +525,8 @@ class OrderService {
 				},
 				'[Order] Order already in final state, skipping transition'
 			)
+			endTimer()
+			recordEventProcessing('payment_succeeded', 'skipped')
 			return
 		}
 
@@ -478,6 +541,8 @@ class OrderService {
 				'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
 				order.status
 			)
+			endTimer()
+			recordEventProcessing('payment_succeeded', 'failed')
 			return
 		}
 
@@ -500,6 +565,11 @@ class OrderService {
 						},
 						'[Order] Order status updated to PAID (payment succeeded)'
 					)
+
+					// Record state transition and saga metrics
+					recordStateTransition('CONFIRMED', 'PAID', 'payment_success')
+					recordSagaOperation('order_flow', 'payment', 'success')
+					recordOrderValue(order.totalPrice, 'USD', 'paid')
 
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_PAID',
@@ -524,9 +594,14 @@ class OrderService {
 						},
 						'[Order] Invalid state transition for PAYMENT_SUCCEEDED'
 					)
+					endTimer()
+					recordEventProcessing('payment_succeeded', 'failed')
 					throw error
 				}
 			})
+
+			endTimer()
+			recordEventProcessing('payment_succeeded', 'success')
 		} finally {
 			session.endSession()
 		}
@@ -537,6 +612,7 @@ class OrderService {
 	 * Includes compensation logic to release reserved inventory
 	 */
 	async handlePaymentFailed(payload, correlationId) {
+		const endTimer = startEventProcessingTimer('payment_failed')
 		logger.warn(
 			{
 				orderId: payload.orderId,
@@ -553,6 +629,8 @@ class OrderService {
 				{ orderId: payload.orderId, correlationId },
 				'[Order] Order not found for PAYMENT_FAILED'
 			)
+			endTimer()
+			recordEventProcessing('payment_failed', 'skipped')
 			return
 		}
 
@@ -567,6 +645,8 @@ class OrderService {
 				},
 				'[Order] Order already in final state, skipping transition'
 			)
+			endTimer()
+			recordEventProcessing('payment_failed', 'skipped')
 			return
 		}
 
@@ -581,6 +661,8 @@ class OrderService {
 				'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
 				order.status
 			)
+			endTimer()
+			recordEventProcessing('payment_failed', 'failed')
 			return
 		}
 
@@ -606,6 +688,11 @@ class OrderService {
 						'[Order] Order status updated to CANCELLED (payment failed)'
 					)
 
+					// Record state transition and saga metrics
+					recordStateTransition('CONFIRMED', 'CANCELLED', 'payment_failed')
+					recordSagaOperation('order_flow', 'payment', 'failed')
+					recordOrderValue(order.totalPrice, 'USD', 'cancelled')
+
 					// Release reserved inventory (compensation)
 					for (const product of order.products) {
 						if (product.reserved) {
@@ -625,6 +712,7 @@ class OrderService {
 								correlationId,
 								routingKey: 'order.release',
 							})
+							recordSagaOperation('order_flow', 'release', 'compensated')
 						}
 					}
 
@@ -649,9 +737,14 @@ class OrderService {
 						},
 						'[Order] Invalid state transition for PAYMENT_FAILED'
 					)
+					endTimer()
+					recordEventProcessing('payment_failed', 'failed')
 					throw error
 				}
 			})
+
+			endTimer()
+			recordEventProcessing('payment_failed', 'success')
 		} finally {
 			session.endSession()
 		}

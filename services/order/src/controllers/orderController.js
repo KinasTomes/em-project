@@ -1,4 +1,5 @@
 const logger = require('@ecommerce/logger')
+const { recordOrderOperation } = require('../metrics')
 
 class OrderController {
 	constructor(orderService) {
@@ -36,12 +37,15 @@ class OrderController {
 				token
 			)
 
+			recordOrderOperation('create', 'success')
 			return res.status(201).json(result)
 		} catch (error) {
 			logger.error(
 				{ error: error.message, body: req.body },
 				'Failed to create order'
 			)
+
+			recordOrderOperation('create', 'failed')
 
 			if (error.message.includes('not found')) {
 				return res.status(404).json({ message: error.message })
@@ -70,8 +74,12 @@ class OrderController {
 			if (!id) return res.status(400).json({ message: 'Order id required' })
 
 			const order = await this.orderService.getOrderById(id)
-			if (!order) return res.status(404).json({ message: 'Order not found' })
+			if (!order) {
+				recordOrderOperation('read', 'not_found')
+				return res.status(404).json({ message: 'Order not found' })
+			}
 
+			recordOrderOperation('read', 'success')
 			return res.status(200).json({
 				orderId: order._id,
 				products: order.products,
@@ -83,6 +91,7 @@ class OrderController {
 			})
 		} catch (error) {
 			logger.error({ error: error.message }, 'Failed to fetch order')
+			recordOrderOperation('read', 'failed')
 			return res.status(500).json({ message: 'Server error' })
 		}
 	}
@@ -104,6 +113,7 @@ class OrderController {
 
 			const result = await this.orderService.getOrdersByUser(username, page, limit)
 
+			recordOrderOperation('list', 'success')
 			return res.status(200).json({
 				orders: result.items.map((order) => ({
 					orderId: order._id,
@@ -122,6 +132,7 @@ class OrderController {
 			})
 		} catch (error) {
 			logger.error({ error: error.message }, 'Failed to fetch orders')
+			recordOrderOperation('list', 'failed')
 			return res.status(500).json({ message: 'Server error' })
 		}
 	}
