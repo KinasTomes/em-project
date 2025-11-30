@@ -8,6 +8,15 @@
 const logger = require('@ecommerce/logger');
 const config = require('../config');
 
+// Lazy load metrics to avoid circular dependencies
+let gatewayMetrics = null;
+function getMetrics() {
+  if (!gatewayMetrics) {
+    gatewayMetrics = require('../metrics');
+  }
+  return gatewayMetrics;
+}
+
 // JWT verification without external dependencies (using Node.js crypto)
 const crypto = require('crypto');
 
@@ -107,6 +116,12 @@ function authenticate(options = {}) {
       if (optional) {
         return next();
       }
+      // Record auth failure metric
+      try {
+        getMetrics().recordAuthFailure('token_missing');
+      } catch (e) {
+        // Ignore metrics errors
+      }
       return res.status(401).json({
         error: 'Unauthorized',
         message: 'Authentication token required',
@@ -127,6 +142,13 @@ function authenticate(options = {}) {
         '✓ Token verified'
       );
 
+      // Record auth success metric
+      try {
+        getMetrics().recordAuthSuccess();
+      } catch (e) {
+        // Ignore metrics errors
+      }
+
       next();
     } catch (error) {
       logger.warn(
@@ -136,6 +158,14 @@ function authenticate(options = {}) {
 
       if (optional) {
         return next();
+      }
+
+      // Record auth failure metric
+      try {
+        const reason = error.message === 'Token expired' ? 'token_expired' : 'token_invalid';
+        getMetrics().recordAuthFailure(reason);
+      } catch (e) {
+        // Ignore metrics errors
       }
 
       if (error.message === 'Token expired') {
@@ -174,6 +204,13 @@ function authorize(...allowedRoles) {
         { userRole, allowedRoles, path: req.path },
         '✗ Authorization failed - insufficient permissions'
       );
+
+      // Record auth failure metric
+      try {
+        getMetrics().recordAuthFailure('forbidden');
+      } catch (e) {
+        // Ignore metrics errors
+      }
 
       return res.status(403).json({
         error: 'Forbidden',

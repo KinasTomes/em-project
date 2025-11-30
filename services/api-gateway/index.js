@@ -12,6 +12,7 @@ const express = require("express");
 const httpProxy = require("http-proxy");
 const logger = require("@ecommerce/logger");
 const { metricsMiddleware, metricsHandler } = require("@ecommerce/metrics");
+const gatewayMetrics = require("./metrics");
 
 // Import middlewares
 const {
@@ -26,8 +27,57 @@ const {
 
 const proxy = httpProxy.createProxyServer();
 
+// Track proxy request timing
+const proxyTimers = new Map();
+
+// Proxy request start handler - track timing
+proxy.on('proxyReq', (proxyReq, req, res) => {
+  const requestId = req.headers['x-request-id'] || Date.now().toString();
+  proxyTimers.set(requestId, {
+    startTime: process.hrtime.bigint(),
+    target: req.proxyTarget || 'unknown'
+  });
+});
+
+// Proxy response handler - record metrics
+proxy.on('proxyRes', (proxyRes, req, res) => {
+  const requestId = req.headers['x-request-id'];
+  const timerData = proxyTimers.get(requestId);
+  
+  if (timerData) {
+    const endTime = process.hrtime.bigint();
+    const durationSeconds = Number(endTime - timerData.startTime) / 1e9;
+    
+    gatewayMetrics.recordProxyRequest(
+      timerData.target,
+      req.method,
+      proxyRes.statusCode,
+      durationSeconds
+    );
+    
+    // Mark service as healthy on successful response
+    if (proxyRes.statusCode < 500) {
+      gatewayMetrics.setUpstreamHealth(timerData.target, true);
+    }
+    
+    proxyTimers.delete(requestId);
+  }
+});
+
 // Proxy error handler
 proxy.on('error', (err, req, res) => {
+  const requestId = req.headers['x-request-id'];
+  const timerData = proxyTimers.get(requestId);
+  const targetService = timerData?.target || gatewayMetrics.getServiceFromUrl(req.url || '');
+  
+  // Record proxy error metric
+  gatewayMetrics.recordProxyError(targetService, err.code);
+  
+  // Clean up timer
+  if (requestId) {
+    proxyTimers.delete(requestId);
+  }
+
   logger.error(
     {
       error: err.message,
@@ -127,6 +177,7 @@ app.use("/auth", (req, res) => {
     { path: req.path, method: req.method },
     "Routing to auth service"
   );
+  req.proxyTarget = 'auth';
   proxy.web(req, res, { 
     target: config.authServiceUrl,
     timeout: config.proxy.timeout,
@@ -158,6 +209,7 @@ app.use("/products", (req, res, next) => {
     suffix = req.url;
   }
   req.url = `/api/products${suffix}`;
+  req.proxyTarget = 'product';
   proxy.web(req, res, { 
     target: config.productServiceUrl,
     timeout: config.proxy.timeout,
@@ -182,6 +234,7 @@ app.use("/orders", conditionalAuth, (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/orders${suffix}`;
+  req.proxyTarget = 'order';
   proxy.web(req, res, { 
     target: config.orderServiceUrl,
     timeout: config.proxy.timeout,
@@ -206,6 +259,7 @@ app.use("/inventory", (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/inventory${suffix}`;
+  req.proxyTarget = 'inventory';
   // Fixed: Using config.inventoryServiceUrl instead of hardcoded URL
   proxy.web(req, res, { 
     target: config.inventoryServiceUrl,
@@ -231,6 +285,7 @@ app.use("/payments", conditionalAuth, (req, res) => {
     suffix = req.url;
   }
   req.url = `/api/payments${suffix}`;
+  req.proxyTarget = 'payment';
   proxy.web(req, res, { 
     target: config.paymentServiceUrl,
     timeout: config.proxy.timeout,

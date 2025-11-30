@@ -10,6 +10,15 @@
 
 const logger = require('@ecommerce/logger');
 
+// Lazy load metrics to avoid circular dependencies
+let gatewayMetrics = null;
+function getMetrics() {
+  if (!gatewayMetrics) {
+    gatewayMetrics = require('../metrics');
+  }
+  return gatewayMetrics;
+}
+
 // Check if rate limiting is disabled (for load testing)
 const isRateLimitDisabled = process.env.DISABLE_RATE_LIMIT === 'true';
 
@@ -80,6 +89,13 @@ function createRateLimiter(options = {}) {
         'Rate limit exceeded'
       );
 
+      // Record rate limit hit metric
+      try {
+        getMetrics().recordRateLimitHit(options.limiterName || 'general', req.path);
+      } catch (e) {
+        // Ignore metrics errors
+      }
+
       res.setHeader('Retry-After', resetTime);
       return res.status(429).json({
         error: 'Too Many Requests',
@@ -115,6 +131,7 @@ const generalLimiter = createRateLimiter({
   windowMs: 60 * 1000, // 1 minute
   maxRequests: 100,
   message: 'Too many requests from this IP, please try again after a minute.',
+  limiterName: 'general',
 });
 
 /**
@@ -126,6 +143,7 @@ const authLimiter = createRateLimiter({
   windowMs: 60 * 1000, // 1 minute
   maxRequests: 10,
   message: 'Too many authentication attempts, please try again after a minute.',
+  limiterName: 'auth',
 });
 
 /**
@@ -136,6 +154,7 @@ const passwordResetLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000, // 15 minutes
   maxRequests: 3,
   message: 'Too many password reset attempts, please try again later.',
+  limiterName: 'password_reset',
 });
 
 /**
@@ -146,6 +165,7 @@ const writeLimiter = createRateLimiter({
   windowMs: 60 * 1000, // 1 minute
   maxRequests: 30,
   message: 'Too many write operations, please try again after a minute.',
+  limiterName: 'write',
 });
 
 module.exports = {
