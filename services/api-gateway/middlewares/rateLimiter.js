@@ -4,9 +4,14 @@
  * Implements IP-based rate limiting with different limits for:
  * - General API requests
  * - Authentication endpoints (stricter limits to prevent brute force)
+ * 
+ * Can be disabled via DISABLE_RATE_LIMIT=true environment variable for load testing.
  */
 
 const logger = require('@ecommerce/logger');
+
+// Check if rate limiting is disabled (for load testing)
+const isRateLimitDisabled = process.env.DISABLE_RATE_LIMIT === 'true';
 
 // In-memory store for rate limiting (use Redis in production for distributed systems)
 const requestCounts = new Map();
@@ -38,6 +43,11 @@ function createRateLimiter(options = {}) {
   } = options;
 
   return (req, res, next) => {
+    // Skip rate limiting if disabled (for load testing)
+    if (isRateLimitDisabled) {
+      return next();
+    }
+
     const key = keyGenerator(req);
     const now = Date.now();
 

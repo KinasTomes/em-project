@@ -284,7 +284,7 @@ app.listen(config.port, '0.0.0.0', () => {
         payment: config.paymentServiceUrl,
       },
       features: {
-        rateLimiting: 'enabled',
+        rateLimiting: config.rateLimiting.enabled ? 'enabled' : 'DISABLED (load test mode)',
         cors: config.nodeEnv === 'production' ? 'strict' : 'development',
         authentication: 'centralized',
         requestValidation: 'enabled',

@@ -27,6 +27,7 @@ module.exports = {
   
   // Rate Limiting
   rateLimiting: {
+    enabled: process.env.DISABLE_RATE_LIMIT !== 'true', // Set DISABLE_RATE_LIMIT=true for load testing
     general: {
       windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000, // 1 minute
       maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
