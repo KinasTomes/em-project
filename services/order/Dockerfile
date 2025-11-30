@@ -12,6 +12,7 @@ COPY .npmrc .
 COPY package.json .
 
 # Copy all package.json files from shared packages and services
+COPY packages/metrics/package.json ./packages/metrics/
 COPY packages/circuit-breaker/package.json ./packages/circuit-breaker/
 COPY packages/config/package.json ./packages/config/
 COPY packages/logger/package.json ./packages/logger/
@@ -37,6 +38,7 @@ COPY packages/logger ./packages/logger
 COPY packages/message-broker ./packages/message-broker
 COPY packages/outbox-pattern ./packages/outbox-pattern
 COPY packages/tracing ./packages/tracing
+COPY packages/metrics ./packages/metrics/
 
 # Stage 2: Build the final service image
 FROM node:18-alpine
