@@ -1,4 +1,12 @@
 const Product = require('../models/product')
+const logger = require('@ecommerce/logger')
+const {
+	recordProductOperation,
+	startSearchTimer,
+	recordInventorySync,
+	startInventorySyncTimer,
+	updateProductCounts
+} = require('../metrics')
 // const messageBroker = require("../utils/messageBroker");
 const fetch =
 	// dynamic import to support CJS
@@ -25,6 +33,7 @@ class ProductController {
 
 			const validationError = product.validateSync()
 			if (validationError) {
+				recordProductOperation('create', 'failed')
 				return res.status(400).json({ message: validationError.message })
 			}
 
@@ -49,30 +58,18 @@ class ProductController {
 				process.env.INVENTORY_URL || 'http://localhost:3005'
 			const inventoryCreateUrl = `${INVENTORY_BASE}/api/inventory`
 
+			// Start inventory sync timer
+			const endInventoryTimer = startInventorySyncTimer('create')
+
 			try {
-				console.log(
-					`[Product Controller] Calling Inventory create for product ${product._id} with available=${available}`
-				)
-				console.log(
-					`[Product Controller] Token: ${req.headers.authorization?.substring(
-						0,
-						20
-					)}...`
+				logger.debug(
+					{ productId: product._id, available },
+					'Calling Inventory create'
 				)
 				const invBody = {
 					productId: product._id.toString(),
 					available,
 				}
-				console.log(
-					`[Product Controller] Inventory create payload: ${JSON.stringify(
-						invBody
-					)}`
-				)
-				console.log(
-					`[Product Controller] Forwarding Authorization header to Inventory: ${
-						req.headers.authorization || 'missing'
-					}`
-				)
 
 				const invRes = await fetch(inventoryCreateUrl, {
 					method: 'POST',
@@ -85,13 +82,17 @@ class ProductController {
 				})
 
 				const invPayloadText = await invRes.text()
+				endInventoryTimer()
 
 				if (!invRes.ok) {
-					console.error(
-						`[Product Controller] Inventory create failed: status=${invRes.status} body=${invPayloadText}`
+					logger.error(
+						{ status: invRes.status, body: invPayloadText },
+						'Inventory create failed'
 					)
+					recordInventorySync('create', 'failed')
 					// Rollback product if inventory creation fails to keep consistency
 					await Product.findByIdAndDelete(product._id)
+					recordProductOperation('create', 'failed')
 					return res.status(502).json({
 						message: 'Failed to initialize inventory for product',
 						inventoryStatus: invRes.status,
@@ -103,15 +104,17 @@ class ProductController {
 					try {
 						inventoryPayload = JSON.parse(invPayloadText)
 					} catch (err) {
-						console.warn(
-							`[Product Controller] Inventory create returned non-JSON payload: ${invPayloadText}`
+						logger.warn(
+							{ payload: invPayloadText },
+							'Inventory create returned non-JSON payload'
 						)
 					}
 				}
 
 				if (!inventoryPayload) {
-					console.warn(
-						`[Product Controller] Inventory create response missing body for product ${product._id}`
+					logger.warn(
+						{ productId: product._id },
+						'Inventory create response missing body'
 					)
 				}
 
@@ -122,65 +125,92 @@ class ProductController {
 					inventoryPayload &&
 					recordedAvailable !== available
 				) {
-					console.error(
-						`[Product Controller] Inventory create mismatch for product ${product._id}: expected available ${available} but inventory reported ${recordedAvailable}`
+					logger.error(
+						{ productId: product._id, expected: available, actual: recordedAvailable },
+						'Inventory create mismatch'
 					)
+					recordInventorySync('create', 'failed')
 					await Product.findByIdAndDelete(product._id)
+					recordProductOperation('create', 'failed')
 					return res.status(502).json({
 						message: 'Inventory did not persist expected availability',
 						inventoryStatus: invRes.status,
 						inventoryResponse: inventoryPayload,
 					})
 				}
+
+				recordInventorySync('create', 'success')
 			} catch (err) {
-				console.error(
-					`[Product Controller] Error calling Inventory API: ${err.message}`
+				endInventoryTimer()
+				logger.error(
+					{ error: err.message },
+					'Error calling Inventory API'
 				)
+				recordInventorySync('create', 'failed')
 				// Rollback product on network error
 				await Product.findByIdAndDelete(product._id)
+				recordProductOperation('create', 'failed')
 				return res
 					.status(502)
 					.json({ message: 'Inventory service unavailable' })
 			}
 
+			// Record successful product creation and update counts
+			recordProductOperation('create', 'success')
+			updateProductCounts(Product)
+
 			res.status(201).json(product)
 		} catch (error) {
-			console.error(error)
+			logger.error({ error: error.message }, 'Server error in createProduct')
+			recordProductOperation('create', 'failed')
 			res.status(500).json({ message: 'Server error' })
 		}
 	}
 
 	async getProducts(req, res, next) {
+		const endTimer = startSearchTimer('list_all')
 		try {
 			const token = req.headers.authorization
 			if (!token) {
+				endTimer()
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 			const products = await Product.find({})
+			endTimer()
 
+			recordProductOperation('read', 'success')
 			res.status(200).json(products)
 		} catch (error) {
-			console.error(error)
+			endTimer()
+			logger.error({ error: error.message }, 'Server error in getProducts')
+			recordProductOperation('read', 'failed')
 			res.status(500).json({ message: 'Server error' })
 		}
 	}
 
 	async getProductById(req, res, next) {
+		const endTimer = startSearchTimer('by_id')
 		try {
 			const token = req.headers.authorization
 			if (!token) {
+				endTimer()
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 			const { id } = req.params
 			const product = await Product.findById(id)
+			endTimer()
 
 			if (!product) {
+				recordProductOperation('read', 'not_found')
 				return res.status(404).json({ message: 'Product not found' })
 			}
 
+			recordProductOperation('read', 'success')
 			res.status(200).json(product)
 		} catch (error) {
-			console.error(error)
+			endTimer()
+			logger.error({ error: error.message }, 'Server error in getProductById')
+			recordProductOperation('read', 'failed')
 			res.status(500).json({ message: 'Server error' })
 		}
 	}
@@ -198,12 +228,15 @@ class ProductController {
 			})
 
 			if (!product) {
+				recordProductOperation('update', 'not_found')
 				return res.status(404).json({ message: 'Product not found' })
 			}
 
+			recordProductOperation('update', 'success')
 			res.status(200).json(product)
 		} catch (error) {
-			console.error(error)
+			logger.error({ error: error.message }, 'Server error in updateProduct')
+			recordProductOperation('update', 'failed')
 			res.status(500).json({ message: 'Server error' })
 		}
 	}
@@ -218,35 +251,47 @@ class ProductController {
 			const product = await Product.findByIdAndDelete(id)
 
 			if (!product) {
+				recordProductOperation('delete', 'not_found')
 				return res.status(404).json({ message: 'Product not found' })
 			}
 
 			// Synchronous: delete inventory record
 			const INVENTORY_BASE =
 				process.env.INVENTORY_URL || 'http://localhost:3005'
+			const endInventoryTimer = startInventorySyncTimer('delete')
 			try {
-				console.log(
-					`[Product Controller] Calling Inventory delete for product ${id}`
-				)
+				logger.debug({ productId: id }, 'Calling Inventory delete')
 				const invDel = await fetch(`${INVENTORY_BASE}/api/inventory/${id}`, {
 					method: 'DELETE',
 					headers: { Authorization: token },
 				})
+				endInventoryTimer()
 				if (!(invDel.status === 204 || invDel.status === 404)) {
-					console.warn(
-						`[Product Controller] Inventory delete unexpected status=${invDel.status}`
+					logger.warn(
+						{ status: invDel.status },
+						'Inventory delete unexpected status'
 					)
+					recordInventorySync('delete', 'failed')
+				} else {
+					recordInventorySync('delete', 'success')
 				}
 			} catch (err) {
-				console.warn(
-					`[Product Controller] Inventory delete failed (non-fatal): ${err.message}`
+				endInventoryTimer()
+				logger.warn(
+					{ error: err.message },
+					'Inventory delete failed (non-fatal)'
 				)
+				recordInventorySync('delete', 'failed')
 				// choose not to rollback product deletion here; log for ops
 			}
 
+			recordProductOperation('delete', 'success')
+			updateProductCounts(Product)
+
 			res.status(204).send()
 		} catch (error) {
-			console.error(error)
+			logger.error({ error: error.message }, 'Server error in deleteProduct')
+			recordProductOperation('delete', 'failed')
 			res.status(500).json({ message: 'Server error' })
 		}
 	}
