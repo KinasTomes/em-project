@@ -1,6 +1,7 @@
 const express = require('express')
 const mongoose = require('mongoose')
 const logger = require('@ecommerce/logger')
+const { metricsMiddleware, metricsHandler } = require('@ecommerce/metrics')
 const config = require('./config')
 const inventoryRoutes = require('./routes/inventoryRoutes')
 const { registerInventoryConsumer } = require('./consumers/inventoryConsumer')
@@ -22,6 +23,9 @@ class App {
 	}
 
 	setMiddlewares() {
+		// Metrics middleware (must be early in chain)
+		this.app.use(metricsMiddleware('inventory-service'))
+		
 		this.app.use(express.json())
 		this.app.use(express.urlencoded({ extended: true }))
 
@@ -33,6 +37,9 @@ class App {
 	}
 
 	setRoutes() {
+		// Metrics endpoint
+		this.app.get('/metrics', metricsHandler)
+
 		// Health check endpoint
 		this.app.get('/health', (req, res) => {
 			res.status(200).json({

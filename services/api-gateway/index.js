@@ -11,6 +11,7 @@ initTracing("api-gateway", jaegerEndpoint);
 const express = require("express");
 const httpProxy = require("http-proxy");
 const logger = require("@ecommerce/logger");
+const { metricsMiddleware, metricsHandler } = require("@ecommerce/metrics");
 
 // Import middlewares
 const {
@@ -63,6 +64,9 @@ app.set('trust proxy', 1);
 const corsMiddleware = config.nodeEnv === 'production' ? strictCors : devCors;
 app.use(corsMiddleware);
 
+// 1.5. Metrics middleware (early in chain for accurate timing)
+app.use(metricsMiddleware('api-gateway'));
+
 // 2. Request logging & tracking
 app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -103,6 +107,11 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
   });
 });
+
+// ============================================
+// METRICS ENDPOINT (no auth required)
+// ============================================
+app.get('/metrics', metricsHandler);
 
 // ============================================
 // AUTH SERVICE ROUTES
@@ -279,6 +288,7 @@ app.listen(config.port, '0.0.0.0', () => {
         cors: config.nodeEnv === 'production' ? 'strict' : 'development',
         authentication: 'centralized',
         requestValidation: 'enabled',
+        metrics: 'enabled',
       },
     },
     "🚀 API Gateway started successfully"

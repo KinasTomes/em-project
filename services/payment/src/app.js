@@ -1,6 +1,7 @@
 const express = require('express')
 const mongoose = require('mongoose')
 const logger = require('@ecommerce/logger')
+const { metricsMiddleware, metricsHandler } = require('@ecommerce/metrics')
 const config = require('./config')
 const createHealthRouter = require('./routes/healthRoutes')
 const PaymentProcessor = require('./services/paymentProcessor')
@@ -52,11 +53,17 @@ class App {
 	}
 
 	setMiddlewares() {
+		// Metrics middleware (must be early in chain)
+		this.app.use(metricsMiddleware('payment-service'))
+		
 		this.app.use(express.json())
 		this.app.use(express.urlencoded({ extended: false }))
 	}
 
 	setRoutes() {
+		// Metrics endpoint
+		this.app.get('/metrics', metricsHandler)
+
 		this.app.use('/health', createHealthRouter())
 		this.app.get('/', (_req, res) => {
 			res.json({ service: 'payment', status: 'ok' })

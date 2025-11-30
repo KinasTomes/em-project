@@ -14,6 +14,7 @@
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
+    "@ecommerce/metrics": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "chai": "^4.3.7",
     "chai-http": "^4.3.0",

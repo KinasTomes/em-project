@@ -3,6 +3,7 @@ const mongoose = require('mongoose')
 const config = require('./config')
 const productsRouter = require('./routes/productRoutes')
 const logger = require('@ecommerce/logger')
+const { metricsMiddleware, metricsHandler } = require('@ecommerce/metrics')
 
 class App {
 	constructor() {
@@ -21,11 +22,17 @@ class App {
 	}
 
 	setMiddlewares() {
+		// Metrics middleware (must be early in chain)
+		this.app.use(metricsMiddleware('product-service'))
+		
 		this.app.use(express.json())
 		this.app.use(express.urlencoded({ extended: false }))
 	}
 
 	setRoutes() {
+		// Metrics endpoint
+		this.app.get('/metrics', metricsHandler)
+
 		// Health check endpoint
 		this.app.get('/health', (req, res) => {
 			res.status(200).json({

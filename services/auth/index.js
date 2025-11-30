@@ -11,5 +11,8 @@ const logger = require("@ecommerce/logger");
 
 const app = new App();
 
+// Setup graceful shutdown handlers
+app.setupGracefulShutdown();
+
 logger.info("Starting auth service...");
 app.start();

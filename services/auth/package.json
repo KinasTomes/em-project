@@ -13,6 +13,7 @@
   "dependencies": {
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
+    "@ecommerce/metrics": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "bcryptjs": "^2.4.3",
     "express": "^4.18.2",

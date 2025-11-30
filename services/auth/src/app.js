@@ -4,6 +4,7 @@ const config = require("./config");
 const authMiddleware = require("./middlewares/authMiddleware");
 const AuthController = require("./controllers/authController");
 const logger = require("@ecommerce/logger");
+const { metricsMiddleware, metricsHandler } = require("@ecommerce/metrics");
 
 class App {
   constructor() {
@@ -19,21 +20,26 @@ class App {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log("✓ [Auth] MongoDB connected");
-    logger.info({ mongoURI: config.mongoURI }, "MongoDB connected");
+    logger.info({ mongoURI: config.mongoURI }, "✓ [Auth] MongoDB connected");
   }
 
   async disconnectDB() {
     await mongoose.disconnect();
-    console.log("MongoDB disconnected");
+    logger.info("MongoDB disconnected");
   }
 
   setMiddlewares() {
+    // Metrics middleware (must be early in chain)
+    this.app.use(metricsMiddleware("auth-service"));
+    
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: false }));
   }
 
   setRoutes() {
+    // Metrics endpoint
+    this.app.get("/metrics", metricsHandler);
+
     this.app.post("/login", (req, res) => this.authController.login(req, res));
     this.app.post("/register", (req, res) => this.authController.register(req, res));
     this.app.get("/dashboard", authMiddleware, (req, res) => res.json({ message: "Welcome to dashboard" }));
@@ -41,16 +47,49 @@ class App {
 
   start() {
     this.server = this.app.listen(config.port, () => {
-      console.log(`✓ [Auth] Server started on port ${config.port}`);
-      console.log(`✓ [Auth] Ready`);
-      logger.info({ port: config.port }, "Auth service ready");
+      logger.info({ port: config.port }, "✓ [Auth] Server started");
+      logger.info("✓ [Auth] Ready");
     });
   }
 
   async stop() {
+    logger.info("Graceful shutdown initiated...");
+    
+    // Stop accepting new connections
+    if (this.server) {
+      await new Promise((resolve) => {
+        this.server.close((err) => {
+          if (err) {
+            logger.error({ error: err.message }, "Error closing server");
+          } else {
+            logger.info("HTTP server closed");
+          }
+          resolve();
+        });
+      });
+    }
+    
+    // Close database connection
     await mongoose.disconnect();
-    this.server.close();
-    console.log("Server stopped");
+    logger.info("MongoDB disconnected");
+    logger.info("✓ [Auth] Server stopped gracefully");
+  }
+
+  setupGracefulShutdown() {
+    const signals = ['SIGTERM', 'SIGINT'];
+    
+    signals.forEach((signal) => {
+      process.on(signal, async () => {
+        logger.info({ signal }, `Received ${signal}, starting graceful shutdown...`);
+        try {
+          await this.stop();
+          process.exit(0);
+        } catch (error) {
+          logger.error({ error: error.message }, "Error during graceful shutdown");
+          process.exit(1);
+        }
+      });
+    });
   }
 }
 

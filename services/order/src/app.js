@@ -2,6 +2,7 @@
 const mongoose = require('mongoose')
 const config = require('./config')
 const logger = require('@ecommerce/logger')
+const { metricsMiddleware, metricsHandler } = require('@ecommerce/metrics')
 const OrderService = require('./services/orderService')
 const IdempotencyService = require('./services/idempotencyService')
 const OrderController = require('./controllers/orderController')

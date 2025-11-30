@@ -13,6 +13,7 @@
   "dependencies": {
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
+    "@ecommerce/metrics": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "express": "^4.18.2",
     "http-proxy": "^1.18.1"

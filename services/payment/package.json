@@ -20,6 +20,7 @@
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
+    "@ecommerce/metrics": "workspace:*",
     "@ecommerce/outbox-pattern": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "express": "^4.18.2",

@@ -15,6 +15,7 @@
     "@ecommerce/config": "workspace:*",
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/message-broker": "workspace:*",
+    "@ecommerce/metrics": "workspace:*",
     "@ecommerce/outbox-pattern": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
     "amqplib": "^0.10.3",
