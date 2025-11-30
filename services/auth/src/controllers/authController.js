@@ -1,4 +1,6 @@
 const AuthService = require("../services/authService");
+const logger = require("@ecommerce/logger");
+const { recordRegistration } = require("../metrics");
 
 /**
  * Class to encapsulate the logic for the auth routes
@@ -28,13 +30,18 @@ class AuthController {
       const existingUser = await this.authService.findUserByUsername(user.username);
   
       if (existingUser) {
-        console.log("Username already taken")
+        logger.warn({ username: user.username }, "Registration failed: username already taken");
+        recordRegistration('duplicate_username');
         throw new Error("Username already taken");
       }
   
       const result = await this.authService.register(user);
       res.json(result);
     } catch (err) {
+      // Only record 'failed' if it's not a duplicate username error
+      if (err.message !== "Username already taken") {
+        recordRegistration('failed');
+      }
       res.status(400).json({ message: err.message });
     }
   }

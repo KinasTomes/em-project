@@ -3,6 +3,13 @@ const jwt = require("jsonwebtoken");
 const UserRepository = require("../repositories/userRepository");
 const config = require("../config");
 const User = require("../models/user");
+const {
+  recordLoginAttempt,
+  recordRegistration,
+  recordTokenOperation,
+  startPasswordHashTimer,
+  setUserCount
+} = require("../metrics");
 
 /**
  * Class to hold the business logic for the auth service interacting with the user repository
@@ -21,12 +28,17 @@ class AuthService {
     const user = await this.userRepository.getUserByUsername(username);
 
     if (!user) {
+      recordLoginAttempt('user_not_found');
       return { success: false, message: "Invalid username or password" };
     }
 
+    // Time password comparison
+    const endTimer = startPasswordHashTimer('compare');
     const isMatch = await bcrypt.compare(password, user.password);
+    endTimer();
 
     if (!isMatch) {
+      recordLoginAttempt('failed_password');
       return { success: false, message: "Invalid username or password" };
     }
 
@@ -36,14 +48,30 @@ class AuthService {
       { expiresIn: '24h' }
     );
 
+    // Record successful login and token issue
+    recordLoginAttempt('success');
+    recordTokenOperation('issue', 'success');
+
     return { success: true, token };
   }
 
   async register(user) {
+    // Time password hashing
+    const endTimer = startPasswordHashTimer('hash');
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(user.password, salt);
+    endTimer();
 
-    return await this.userRepository.createUser(user);
+    const result = await this.userRepository.createUser(user);
+    
+    // Record successful registration
+    recordRegistration('success');
+    
+    // Update total user count
+    const totalUsers = await User.countDocuments();
+    setUserCount(totalUsers);
+
+    return result;
   }
 
   async deleteTestUsers() {
