@@ -2,6 +2,17 @@ const logger = require('@ecommerce/logger')
 const { OrderConfirmedEventSchema } = require('../schemas/orderConfirmed.schema')
 const IdempotencyService = require('../services/idempotencyService')
 const PaymentService = require('../services/paymentService')
+const {
+	recordPaymentProcessed,
+	recordPaymentAmount,
+	startPaymentProcessingTimer,
+	recordPaymentRetry,
+	recordGatewayError,
+	recordEventProcessing,
+	startEventProcessingTimer,
+	recordIdempotencyCheck,
+	recordOutboxEvent,
+} = require('../metrics')
 
 /**
  * Register consumer for ORDER_CONFIRMED events
@@ -42,6 +53,10 @@ async function registerOrderConfirmedConsumer({
 			
 			const orderId = payload.orderId
 
+			// Record event received and start timer
+			recordEventProcessing('ORDER_CONFIRMED', 'received')
+			const endEventTimer = startEventProcessingTimer('ORDER_CONFIRMED')
+
 			logger.info(
 				{
 					orderId,
@@ -58,12 +73,15 @@ async function registerOrderConfirmedConsumer({
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			const alreadyProcessed = await idempotencyService.isProcessed(orderId)
 			if (alreadyProcessed) {
+				recordIdempotencyCheck(true) // Hit - duplicate
+				recordEventProcessing('ORDER_CONFIRMED', 'skipped')
 				logger.warn(
 					{ orderId, eventId, correlationId },
 					'⚠️ [Payment] Payment already processed for this order, skipping (idempotency)'
 				)
 				return // Skip duplicate processing
 			}
+			recordIdempotencyCheck(false) // Miss - new request
 
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			// STEP 2: Create/Get Payment Record (Database - persistent)
@@ -102,15 +120,31 @@ async function registerOrderConfirmedConsumer({
 				'💳 [Payment] Processing payment...'
 			)
 
+			// Start timer for payment processing duration
+			const endProcessingTimer = startPaymentProcessingTimer('mock_gateway')
+
 			const result = await paymentProcessor.process({
 				orderId,
 				amount: payload.totalPrice,
 				currency: payload.currency || 'USD',
 			})
 
+			// Record retry metrics if attempts > 1
+			if (result.attempts > 1) {
+				for (let i = 2; i <= result.attempts; i++) {
+					recordPaymentRetry(i)
+				}
+			}
+
+			// Record gateway error if failed
+			if (result.status === 'FAILED' && result.errorCode) {
+				recordGatewayError(result.errorCode)
+			}
+
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			// STEP 5: Update Payment Record & Publish Event (Transactional via Outbox)
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const currency = payload.currency || 'USD'
 			if (result.status === 'SUCCEEDED') {
 				await paymentService.markAsSucceeded(
 					orderId,
@@ -120,6 +154,10 @@ async function registerOrderConfirmedConsumer({
 					},
 					correlationId
 				)
+				// Record successful payment metrics
+				recordPaymentProcessed('SUCCEEDED', 'mock_gateway')
+				recordPaymentAmount(payload.totalPrice, currency, 'SUCCEEDED')
+				recordOutboxEvent('PAYMENT_SUCCEEDED', 'queued')
 			} else {
 				await paymentService.markAsFailed(
 					orderId,
@@ -127,12 +165,23 @@ async function registerOrderConfirmedConsumer({
 					payload.products || [],
 					correlationId
 				)
+				// Record failed payment metrics
+				recordPaymentProcessed('FAILED', 'mock_gateway')
+				recordPaymentAmount(payload.totalPrice, currency, 'FAILED')
+				recordOutboxEvent('PAYMENT_FAILED', 'queued')
 			}
+
+			// End processing timer with status
+			endProcessingTimer({ status: result.status })
 
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			// STEP 6: Mark as Processed (Redis Idempotency)
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			await idempotencyService.markAsProcessed(orderId)
+
+			// Record event processed and end timer
+			recordEventProcessing('ORDER_CONFIRMED', 'processed')
+			endEventTimer()
 		},
 		null, // No schema at broker level - we validate in handler
 		routingKeys // Bind queue to exchange with routing keys
