@@ -25,12 +25,14 @@ services:
       - PRODUCT_SERVICE_URL=${PRODUCT_SERVICE_URL:-http://product:3004}
       - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order:3002}
       - INVENTORY_SERVICE_URL=${INVENTORY_SERVICE_URL:-http://inventory:3005}
+      - SECKILL_SERVICE_URL=${SECKILL_SERVICE_URL:-http://seckill:3007}
       - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - auth
       - product
       - order
+      - seckill
       - jaeger
     networks:
       - ecommerce-network
@@ -158,7 +160,35 @@ services:
       - ecommerce-network
 
   #----------------------------------------------------------------
-  # 7. INFRASTRUCTURE
+  # 7. Seckill Service (Flash Sale)
+  #----------------------------------------------------------------
+  seckill:
+    build:
+      context: .
+      dockerfile: ./services/seckill/Dockerfile
+    ports:
+      - "${SECKILL_PORT:-3007}:3007"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${SECKILL_PORT:-3007}
+      - SECKILL_PORT=${SECKILL_PORT:-3007}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://rabbitmq:5672}
+      - REDIS_SECKILL_URL=${REDIS_SECKILL_URL:-redis://redis-seckill:6380}
+      - EXCHANGE_NAME=${EXCHANGE_NAME:-ecommerce.events}
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-http://jaeger:4318/v1/traces}
+      - SECKILL_ADMIN_KEY=${SECKILL_ADMIN_KEY:-seckill-admin-key}
+      - SECKILL_RATE_LIMIT=${SECKILL_RATE_LIMIT:-5}
+      - SECKILL_RATE_WINDOW=${SECKILL_RATE_WINDOW:-1}
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - rabbitmq
+      - redis-seckill
+      - jaeger
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 8. INFRASTRUCTURE
   #----------------------------------------------------------------
   # # Redis for Idempotency and Caching
   # redis:
@@ -218,8 +248,32 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
 
+  # Dedicated Redis for Seckill Service (Flash Sale)
+  # Configured with noeviction policy and AOF persistence for data durability
+  # Requirements: 9.1, 9.2, 9.3
+  redis-seckill:
+    image: redis:7-alpine
+    container_name: 'redis-seckill'
+    ports:
+      - "6380:6380"
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - redis_seckill_data:/data
+    command: >
+      redis-server
+      --port 6380
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+
 #----------------------------------------------------------------
-# 6. NETWORKS & VOLUMES
+# 9. NETWORKS & VOLUMES
 #----------------------------------------------------------------
 networks:
   ecommerce-network:
@@ -227,3 +281,4 @@ networks:
 
 volumes:
   redis_data:
+  redis_seckill_data:

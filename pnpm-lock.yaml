@@ -393,6 +393,9 @@ importers:
       '@ecommerce/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.0
       amqplib:
         specifier: ^0.10.3
         version: 0.10.9

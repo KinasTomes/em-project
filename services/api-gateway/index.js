@@ -294,6 +294,50 @@ app.use("/payments", conditionalAuth, (req, res) => {
 });
 
 // ============================================
+// SECKILL SERVICE ROUTES (Flash Sale)
+// ============================================
+// POST /seckill/buy requires authentication (X-User-ID header set after JWT verification)
+// GET /seckill/status/:productId is public
+// Admin routes (/admin/seckill/*) require X-Admin-Key header (handled by seckill service)
+app.use("/seckill", (req, res, next) => {
+  // GET /status is public
+  if (req.method === 'GET' && req.path.startsWith('/status')) {
+    return next();
+  }
+  // POST /buy requires authentication
+  if (req.method === 'POST' && req.path === '/buy') {
+    return conditionalAuth(req, res, next);
+  }
+  // Other routes pass through (admin routes handled by seckill service)
+  next();
+}, (req, res) => {
+  logger.info(
+    { path: req.path, method: req.method },
+    "Routing to seckill service"
+  );
+  req.proxyTarget = 'seckill';
+  proxy.web(req, res, { 
+    target: config.seckillServiceUrl,
+    timeout: config.proxy.timeout,
+    proxyTimeout: config.proxy.proxyTimeout,
+  });
+});
+
+// Admin seckill routes (separate path for clarity)
+app.use("/admin/seckill", (req, res) => {
+  logger.info(
+    { path: req.path, method: req.method },
+    "Routing to seckill admin service"
+  );
+  req.proxyTarget = 'seckill';
+  proxy.web(req, res, { 
+    target: config.seckillServiceUrl,
+    timeout: config.proxy.timeout,
+    proxyTimeout: config.proxy.proxyTimeout,
+  });
+});
+
+// ============================================
 // 404 HANDLER
 // ============================================
 app.use((req, res) => {
@@ -337,6 +381,7 @@ app.listen(config.port, '0.0.0.0', () => {
         order: config.orderServiceUrl,
         inventory: config.inventoryServiceUrl,
         payment: config.paymentServiceUrl,
+        seckill: config.seckillServiceUrl,
       },
       features: {
         rateLimiting: config.rateLimiting.enabled ? 'enabled' : 'DISABLED (load test mode)',

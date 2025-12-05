@@ -11,6 +11,7 @@ module.exports = {
   orderServiceUrl: process.env.ORDER_SERVICE_URL || "http://localhost:3002",
   inventoryServiceUrl: process.env.INVENTORY_SERVICE_URL || "http://localhost:3005",
   paymentServiceUrl: process.env.PAYMENT_SERVICE_URL || "http://localhost:3006",
+  seckillServiceUrl: process.env.SECKILL_SERVICE_URL || "http://localhost:3007",
   
   // JWT Configuration
   jwtSecret: (() => {
