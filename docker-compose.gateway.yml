@@ -1,0 +1,41 @@
+services:
+  # 1. Redis Flash Sale (Chuyển nhà sang đây)
+  redis-flashsale:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --protected-mode no
+    ports:
+      - "6379:6379" # Mở cổng cho VM 1 gọi ké
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 2G }
+
+  # 2. Daddy Gateway (Node.js)
+  api-gateway:
+    build:
+      context: .
+      dockerfile: ./services/api-gateway/Dockerfile
+    ports:
+      - "3000:3000" # Mở ra Internet cho khách hàng
+    environment:
+      - PORT=3000
+      # Cấu hình trỏ sang các VM khác (Quan trọng!)
+      
+      # Order: Gọi sang VM 1 (Cổng 80 - Nginx Order)
+      - ORDER_SERVICE_URL=http://10.148.0.5:80
+      
+      # Flash Sale: Gọi nội bộ (localhost)
+      - FLASH_SALE_SERVICE_URL=http://flash-sale:3000
+      
+      # Auth, Product...: Gọi sang VM 3 (Cổng 80 - Nginx Support + Prefix path)
+      - AUTH_SERVICE_URL=http://10.148.0.7:80/auth
+      - PRODUCT_SERVICE_URL=http://10.148.0.7:80/product
+      - INVENTORY_SERVICE_URL=http://10.148.0.7:80/inventory
+      
+      - RABBITMQ_URL=amqp://user:pass@10.148.0.7:5672
+
+  # 3. Flash Sale Service
+  flash-sale:
+    build: ./services/flash-sale
+    environment:
+      - REDIS_HOST=10.148.0.5 # Gọi Redis ở VM 1
+      - REDIS_PORT=6379

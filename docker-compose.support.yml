@@ -1,0 +1,40 @@
+services:
+  # 1. Baby Gateway (Nginx) - Router
+  support-gateway:
+    image: nginx:alpine
+    ports:
+      - "80:80" # Mở port 80
+    volumes:
+      - ./nginx-support.conf:/etc/nginx/nginx.conf:ro
+
+  # 2. Infrastructure (RabbitMQ, Jaeger)
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"   # Mở port này để Order (VM1) và Gateway (VM2) kết nối
+      - "15672:15672" # Management UI
+    
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "4318:4318" # Cho các service khác bắn trace về
+
+  # 3. Các Service Con
+  inventory:
+    build: ./services/inventory
+    environment:
+      - PORT=3005
+      - RABBITMQ_URL=amqp://rabbitmq:5672 # Gọi nội bộ
+      # ...
+  
+  product:
+    build: ./services/product
+    environment: { PORT: 3004, RABBITMQ_URL: amqp://rabbitmq:5672 }
+
+  payment:
+    build: ./services/payment
+    environment: { PORT: 3006, RABBITMQ_URL: amqp://rabbitmq:5672 }
+
+  auth:
+    build: ./services/auth
+    environment: { PORT: 3001 }
