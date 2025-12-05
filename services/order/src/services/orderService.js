@@ -1,4 +1,4 @@
-﻿const mongoose = require('mongoose')
+const mongoose = require('mongoose')
 const orderRepository = require('../repositories/orderRepository')
 const logger = require('@ecommerce/logger')
 const { createOrderStateMachine } = require('./orderStateMachine')
@@ -455,6 +455,12 @@ class OrderService {
 					recordSagaOperation('order_flow', 'reserve', 'failed')
 					recordOrderValue(order.totalPrice, 'USD', 'cancelled')
 
+					// Compensation: Release seckill slot if this is a seckill order
+					const isSeckill = order.metadata?.source === 'seckill'
+					if (isSeckill) {
+						await this._publishSeckillRelease(order, session, correlationId, 'INVENTORY_RESERVE_FAILED')
+					}
+
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_CANCELLED',
 						payload: {
@@ -716,6 +722,12 @@ class OrderService {
 						}
 					}
 
+					// Compensation: Release seckill slot if this is a seckill order
+					const isSeckill = order.metadata?.source === 'seckill'
+					if (isSeckill) {
+						await this._publishSeckillRelease(order, session, correlationId, 'PAYMENT_FAILED')
+					}
+
 					await this.outboxManager.createEvent({
 						eventType: 'ORDER_CANCELLED',
 						payload: {
@@ -748,6 +760,56 @@ class OrderService {
 		} finally {
 			session.endSession()
 		}
+	}
+
+	/**
+	 * Publish seckill release event for compensation
+	 * Called when a seckill order is cancelled (either due to inventory or payment failure)
+	 * 
+	 * @private
+	 * @param {Object} order - Order document
+	 * @param {Object} session - MongoDB session
+	 * @param {string} correlationId - Correlation ID for tracing
+	 * @param {string} reason - Reason for release (e.g., 'PAYMENT_FAILED', 'INVENTORY_RESERVE_FAILED')
+	 */
+	async _publishSeckillRelease(order, session, correlationId, reason) {
+		// For seckill orders, we need to release the slot back to Redis
+		// so another user can purchase
+		const productId = order.products[0]?._id?.toString()
+
+		if (!productId) {
+			logger.warn(
+				{ orderId: order._id, correlationId },
+				'[Order] Cannot publish seckill release: No product found in order'
+			)
+			return
+		}
+
+		await this.outboxManager.createEvent({
+			eventType: 'SECKILL_RELEASE',
+			payload: {
+				orderId: order._id.toString(),
+				userId: order.user,
+				productId: productId,
+				reason: reason,
+			},
+			session,
+			correlationId,
+			routingKey: 'order.seckill.release',
+		})
+
+		logger.info(
+			{
+				orderId: order._id,
+				userId: order.user,
+				productId,
+				reason,
+				correlationId,
+			},
+			'🔓 [Order] Published order.seckill.release event for compensation'
+		)
+
+		recordSagaOperation('order_flow', 'seckill_release', 'compensated')
 	}
 }
 

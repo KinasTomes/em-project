@@ -18,26 +18,46 @@ let idempotencyService = null
 /**
  * Handle ORDER_CREATED event - Reserve stock for order
  * Uses Outbox Pattern for transactional messaging
+ * 
+ * Supports two modes:
+ * - Regular order: Full validation with business rules
+ * - Seckill order: "Blind Update" - trust Redis, just do atomic DB update
  */
 async function handleOrderCreated(message, metadata = {}) {
 	const { orderId, products } = message
+	const orderMetadata = message.metadata || {}
 	const { eventId, correlationId } = metadata
 	const baseEventId = eventId || uuidv4()
 	const correlatedId = correlationId || orderId
 
+	// Check if this is a seckill order
+	const isSeckill = orderMetadata.source === 'seckill'
+
 	logger.info(
-		{ orderId, productsCount: products.length, eventId, correlationId },
-		'📦 [Inventory] Handling RESERVE request (Batch)'
+		{ orderId, productsCount: products.length, eventId, correlationId, isSeckill, source: orderMetadata.source },
+		`📦 [Inventory] Handling RESERVE request (${isSeckill ? 'Seckill Blind Update' : 'Regular Batch'})`
 	)
 
 	const session = await mongoose.startSession()
 	session.startTransaction()
 
 	try {
-		const result = await inventoryService.reserveStockBatch(products, session, {
-			orderId,
-			correlationId: correlatedId,
-		})
+		let result
+
+		if (isSeckill) {
+			// SECKILL LOGIC: "Blind Update" - Trust Redis, atomic DB update
+			// Redis has already validated and reserved. Just sync DB state.
+			result = await handleSeckillReserve(products, session, {
+				orderId,
+				correlationId: correlatedId,
+			})
+		} else {
+			// REGULAR ORDER LOGIC: Full validation with business rules
+			result = await inventoryService.reserveStockBatch(products, session, {
+				orderId,
+				correlationId: correlatedId,
+			})
+		}
 
 		if (result.success) {
 			await outboxManager.createEvent({
@@ -63,8 +83,9 @@ async function handleOrderCreated(message, metadata = {}) {
 					orderId,
 					productsCount: products.length,
 					routingKey: 'inventory.reserved.success',
+					isSeckill,
 				},
-				'✓ [Inventory] RESERVED_SUCCESS - queued via Outbox'
+				`✓ [Inventory] RESERVED_SUCCESS - queued via Outbox (${isSeckill ? 'Seckill' : 'Regular'})`
 			)
 		} else {
 			// Rollback any partial changes
@@ -99,8 +120,9 @@ async function handleOrderCreated(message, metadata = {}) {
 						orderId,
 						reason: result.message,
 						routingKey: 'inventory.reserved.failed',
+						isSeckill,
 					},
-					'✗ [Inventory] RESERVED_FAILED - insufficient stock, queued via Outbox'
+					`✗ [Inventory] RESERVED_FAILED - ${isSeckill ? 'DB sync failed (Redis/DB mismatch)' : 'insufficient stock'}, queued via Outbox`
 				)
 			} catch (failError) {
 				await failSession.abortTransaction()
@@ -113,7 +135,7 @@ async function handleOrderCreated(message, metadata = {}) {
 		await session.abortTransaction()
 
 		logger.error(
-			{ error: error.message, orderId },
+			{ error: error.message, orderId, isSeckill },
 			'❌ [Inventory] Error processing RESERVE request'
 		)
 
@@ -151,6 +173,83 @@ async function handleOrderCreated(message, metadata = {}) {
 		}
 	} finally {
 		session.endSession()
+	}
+}
+
+/**
+ * Handle Seckill Reserve - "Blind Update" mode
+ * 
+ * For seckill orders, we trust Redis has already done the validation.
+ * We just need to atomically update DB to keep it in sync.
+ * 
+ * Uses optimistic update: UPDATE WHERE available >= quantity
+ * If this fails, it means Redis and DB are out of sync (rare edge case)
+ * 
+ * @param {Array} products - Array of {productId, quantity}
+ * @param {Object} session - MongoDB session for transaction
+ * @param {Object} options - {orderId, correlationId}
+ * @returns {Object} - {success: boolean, message: string}
+ */
+async function handleSeckillReserve(products, session, options = {}) {
+	const { orderId, correlationId } = options
+	const Inventory = require('../models/inventory')
+
+	logger.info(
+		{ orderId, products, correlationId },
+		'🎯 [Inventory] Seckill Blind Update - Starting atomic DB sync'
+	)
+
+	try {
+		for (const product of products) {
+			const { productId, quantity } = product
+
+			// Atomic update: Decrement available, increment reserved
+			// Only succeeds if available >= quantity (prevents negative stock)
+			const result = await Inventory.updateOne(
+				{
+					productId: productId,
+					available: { $gte: quantity },
+				},
+				{
+					$inc: {
+						available: -quantity,
+						reserved: quantity,
+					},
+				},
+				{ session }
+			)
+
+			if (result.modifiedCount === 0) {
+				// DB is out of sync with Redis - this is a rare edge case
+				logger.error(
+					{ orderId, productId, quantity, correlationId },
+					'❌ [Inventory] Seckill Blind Update FAILED - DB out of sync with Redis'
+				)
+				return {
+					success: false,
+					message: `DB_OUT_OF_STOCK: Product ${productId} has insufficient stock in DB (Redis/DB mismatch)`,
+				}
+			}
+
+			logger.info(
+				{ orderId, productId, quantity, correlationId },
+				'✓ [Inventory] Seckill Blind Update - DB stock decremented'
+			)
+		}
+
+		return {
+			success: true,
+			message: 'Seckill blind update completed successfully',
+		}
+	} catch (error) {
+		logger.error(
+			{ error: error.message, orderId, correlationId },
+			'❌ [Inventory] Seckill Blind Update error'
+		)
+		return {
+			success: false,
+			message: error.message,
+		}
 	}
 }
 

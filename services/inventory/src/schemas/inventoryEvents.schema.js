@@ -3,6 +3,10 @@ const { z } = require('zod')
 /**
  * Schema for ORDER_CREATED event
  * Inventory listens to this event to reserve stock
+ * 
+ * Supports metadata for order source tracking:
+ * - source: 'regular' | 'seckill' - Order origin
+ * - seckillRef: string - Reference to seckill event ID
  */
 const OrderCreatedSchema = z
 	.object({
@@ -18,6 +22,13 @@ const OrderCreatedSchema = z
 						})
 					)
 					.min(1, 'At least one product is required'),
+				// Metadata for seckill integration
+				metadata: z
+					.object({
+						source: z.enum(['regular', 'seckill']).optional(),
+						seckillRef: z.string().optional(),
+					})
+					.optional(),
 			})
 			.passthrough(),
 		timestamp: z.string().optional(),
@@ -29,6 +40,7 @@ const OrderCreatedSchema = z
 		return {
 			orderId: data.orderId,
 			products: data.products,
+			metadata: data.metadata || { source: 'regular' },
 			rawType: message.type || 'ORDER_CREATED',
 		}
 	})

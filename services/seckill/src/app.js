@@ -34,7 +34,7 @@ class App {
   setMiddlewares() {
     // Metrics middleware (must be early in chain)
     this.app.use(metricsMiddleware('seckill-service'))
-    
+
     // JSON body parsing
     this.app.use(express.json())
     this.app.use(express.urlencoded({ extended: false }))
@@ -75,8 +75,8 @@ class App {
       logger.error({ error: err.message, stack: err.stack }, 'Unhandled error')
       res.status(err.status || 500).json({
         error: 'INTERNAL_ERROR',
-        message: process.env.NODE_ENV === 'development' 
-          ? err.message 
+        message: process.env.NODE_ENV === 'development'
+          ? err.message
           : 'An unexpected error occurred',
       })
     })
@@ -110,8 +110,8 @@ class App {
       const { Broker: BrokerClass } = await import('@ecommerce/message-broker')
       Broker = BrokerClass
 
-      // Initialize Broker
-      this.broker = new Broker()
+      // Initialize Broker (using Seckill's Redis URL for idempotency)
+      this.broker = new Broker(config.redisUrl)
       logger.info('✓ [Seckill] Broker initialized')
 
       // Set message broker on seckill service for event publishing

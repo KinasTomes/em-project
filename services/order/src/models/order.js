@@ -23,6 +23,11 @@ const orderSchema = new mongoose.Schema(
 			default: 'PENDING',
 		},
 		cancellationReason: { type: String },
+		// Metadata for tracking order source and references
+		metadata: {
+			source: { type: String, enum: ['regular', 'seckill'], default: 'regular' },
+			seckillRef: { type: String }, // Reference to seckill order ID
+		},
 		createdAt: { type: Date, default: Date.now },
 	},
 	{ collection: 'orders' }

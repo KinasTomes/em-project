@@ -1,4 +1,4 @@
-﻿const express = require('express')
+const express = require('express')
 const mongoose = require('mongoose')
 const config = require('./config')
 const logger = require('@ecommerce/logger')
@@ -8,6 +8,8 @@ const IdempotencyService = require('./services/idempotencyService')
 const OrderController = require('./controllers/orderController')
 const orderRoutes = require('./routes/orderRoutes')
 const { registerOrderEventsConsumer } = require('./consumers/orderEventsConsumer')
+const { registerSeckillConsumer } = require('./consumers/seckillConsumer')
+const orderRepository = require('./repositories/orderRepository')
 
 // Import ES modules dynamically
 let OutboxManager
@@ -100,6 +102,14 @@ class App {
 				orderService: this.orderService,
 				idempotencyService: this.idempotencyService,
 				config,
+			})
+
+			// Register seckill consumer for seckill.order.won events
+			await registerSeckillConsumer({
+				broker: this.broker,
+				outbox: this.outboxManager,
+				repository: orderRepository,
+				idempotencyService: this.idempotencyService,
 			})
 		} catch (error) {
 			logger.error(
