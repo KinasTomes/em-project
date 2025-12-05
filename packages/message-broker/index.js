@@ -7,14 +7,15 @@ import logger from '@ecommerce/logger'
 const tracer = trace.getTracer('ecommerce-broker');
 
 export class Broker {
-  constructor() {
+  constructor(redisUrl) {
     this.connection = null;
     this.channel = null;
     this.redisClient = null;
     this.isConnected = false;
     this.consumers = []; // Track registered consumers for re-registration
     this.exchangeName = process.env.EXCHANGE_NAME || 'ecommerce.events';
-    
+    this.redisUrl = redisUrl; // Custom Redis URL (optional)
+
     logger.info('Broker initialized (connections will be established on first use)');
   }
 
@@ -33,10 +34,10 @@ export class Broker {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         logger.info({ attempt, rabbitMQUrl }, '⏳ Connecting to RabbitMQ...');
-        
+
         this.connection = await amqp.connect(rabbitMQUrl);
         this.channel = await this.connection.createChannel();
-        
+
         // Setup connection error handlers
         this.connection.on('error', (err) => {
           logger.error({ error: err.message }, '❌ RabbitMQ connection error');
@@ -48,10 +49,10 @@ export class Broker {
           this.isConnected = false;
           this.connection = null;
           this.channel = null;
-          
+
           // Wait before reconnecting
           await new Promise(resolve => setTimeout(resolve, 5000));
-          
+
           try {
             await this._ensureRabbitMQConnection();
             // Re-register all consumers after reconnection
@@ -72,10 +73,10 @@ export class Broker {
         return;
 
       } catch (error) {
-        logger.error({ 
-          error: error.message, 
-          attempt, 
-          maxRetries 
+        logger.error({
+          error: error.message,
+          attempt,
+          maxRetries
         }, `❌ Failed to connect to RabbitMQ (attempt ${attempt}/${maxRetries})`);
 
         if (attempt === maxRetries) {
@@ -96,13 +97,13 @@ export class Broker {
       return;
     }
 
-    const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+    const redisUrl = this.redisUrl || process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
     try {
       logger.info({ redisUrl }, '⏳ Connecting to Redis...');
-      
+
       this.redisClient = createClient({ url: redisUrl });
-      
+
       this.redisClient.on('error', (err) => {
         logger.error({ error: err.message }, '❌ Redis connection error');
       });
@@ -132,7 +133,7 @@ export class Broker {
     await this._ensureRabbitMQConnection();
 
     const span = tracer.startSpan(`publish-${routingKey}`);
-    
+
     try {
       // Lấy active context và inject vào headers
       const activeContext = trace.setSpan(context.active(), span);
@@ -168,9 +169,9 @@ export class Broker {
             throw new Error('Channel buffer full, message not published');
           }
 
-          logger.info({ 
-            eventId, 
-            correlationId, 
+          logger.info({
+            eventId,
+            correlationId,
             routingKey,
             exchange: this.exchangeName,
             traceId: span.spanContext().traceId
@@ -180,15 +181,15 @@ export class Broker {
           span.setAttribute('routing.key', routingKey);
           span.setAttribute('exchange.name', this.exchangeName);
           span.setStatus({ code: SpanStatusCode.OK });
-          
+
           return;
 
         } catch (error) {
           lastError = error;
-          logger.warn({ 
-            error: error.message, 
-            attempt, 
-            eventId 
+          logger.warn({
+            error: error.message,
+            attempt,
+            eventId
           }, `⚠️  Publish attempt ${attempt} failed`);
 
           if (attempt < maxRetries) {
@@ -200,10 +201,10 @@ export class Broker {
       throw new Error(`Failed to publish after ${maxRetries} attempts: ${lastError.message}`);
 
     } catch (error) {
-      logger.error({ 
-        error: error.message, 
-        eventId, 
-        routingKey 
+      logger.error({
+        error: error.message,
+        eventId,
+        routingKey
       }, '❌ Failed to publish message');
 
       span.recordException(error);
@@ -221,9 +222,9 @@ export class Broker {
    */
   async _reregisterConsumers() {
     if (this.consumers.length === 0) return;
-    
+
     logger.info({ count: this.consumers.length }, '🔄 Re-registering consumers...');
-    
+
     for (const { queue, handler, schema, routingKeys } of this.consumers) {
       try {
         await this._setupConsumer(queue, handler, schema, routingKeys);
@@ -244,10 +245,10 @@ export class Broker {
   async consume(queue, handler, schema, routingKeys = []) {
     await this._ensureRabbitMQConnection();
     await this._ensureRedisConnection();
-    
+
     // Normalize routingKeys to array
     const normalizedRoutingKeys = Array.isArray(routingKeys) ? routingKeys : [routingKeys];
-    
+
     // Store consumer info for re-registration after reconnect
     const existingIndex = this.consumers.findIndex(c => c.queue === queue);
     if (existingIndex >= 0) {
@@ -255,7 +256,7 @@ export class Broker {
     } else {
       this.consumers.push({ queue, handler, schema, routingKeys: normalizedRoutingKeys });
     }
-    
+
     await this._setupConsumer(queue, handler, schema, normalizedRoutingKeys);
   }
 
@@ -270,7 +271,7 @@ export class Broker {
     }
 
     // Assert queue exists
-    await this.channel.assertQueue(queue, { 
+    await this.channel.assertQueue(queue, {
       durable: true,
       arguments: {
         'x-dead-letter-exchange': '',
@@ -399,7 +400,7 @@ export class Broker {
 
       } catch (error) {
         const duration = Date.now() - startTime;
-        
+
         logger.error({
           error: error.message,
           stack: error.stack,
@@ -415,8 +416,8 @@ export class Broker {
 
         // Classify error type
         const isTransientError = error.message?.includes('ECONNREFUSED') ||
-                                error.message?.includes('timeout') ||
-                                error.message?.includes('ETIMEDOUT');
+          error.message?.includes('timeout') ||
+          error.message?.includes('ETIMEDOUT');
 
         if (isTransientError) {
           // Transient error → Requeue for retry
