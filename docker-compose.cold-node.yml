@@ -1,0 +1,89 @@
+# Cold Node (VM2 - Order, Inventory, Payment)
+# Usage: docker compose --env-file .env.cold-node -f docker-compose.cold-node.yml up -d
+
+services:
+  #----------------------------------------------------------------
+  # 1. Nginx Load Balancer (Entry Point for VM 2)
+  #----------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "3002:3002" # Order LB
+      - "3005:3005" # Inventory LB
+      - "3006:3006" # Payment LB
+    volumes:
+      - ./nginx-cold.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - order
+      - inventory
+      - payment
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 2. Order Service Workers (x4)
+  #----------------------------------------------------------------
+  order:
+    build:
+      context: .
+      dockerfile: ./services/order/Dockerfile
+    env_file:
+      - .env.cold-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3002
+      - MONGODB_ORDER_URI=${MONGODB_ORDER_URI}
+      - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
+      - REDIS_URL=redis://${INFRAS_NODE_IP}:6379
+      - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
+      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}
+    deploy:
+      replicas: 4
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 3. Inventory Service Workers (x2)
+  #----------------------------------------------------------------
+  inventory:
+    build:
+      context: .
+      dockerfile: ./services/inventory/Dockerfile
+    env_file:
+      - .env.cold-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3005
+      - MONGODB_INVENTORY_URI=${MONGODB_INVENTORY_URI}
+      - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
+      - REDIS_URL=redis://${INFRAS_NODE_IP}:6379
+      - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
+    deploy:
+      replicas: 2
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 4. Payment Service Workers (x2)
+  #----------------------------------------------------------------
+  payment:
+    build:
+      context: .
+      dockerfile: ./services/payment/Dockerfile
+    env_file:
+      - .env.cold-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3006
+      - MONGODB_PAYMENT_URI=${MONGODB_PAYMENT_URI}
+      - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
+      - REDIS_URL=redis://${INFRAS_NODE_IP}:6379
+      - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
+    deploy:
+      replicas: 2
+    networks:
+      - ecommerce-network
+
+networks:
+  ecommerce-network:
+    driver: bridge

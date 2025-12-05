@@ -1,36 +1,30 @@
-const jwt = require("jsonwebtoken");
-const config = require("../config");
 const logger = require("@ecommerce/logger");
 
 /**
- * Middleware to verify JWT token
+ * Authentication middleware - trusts API Gateway
+ * 
+ * API Gateway đã verify JWT và set các headers:
+ * - x-user-id: User ID từ token
+ * - x-user-email: Email (optional)
+ * - x-user-role: Role (optional)
+ * - x-auth-verified: 'true' nếu đã verify
  */
 function isAuthenticated(req, res, next) {
-  try {
-    const authHeader = req.headers.authorization;
+  const userId = req.headers["x-user-id"];
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res
-        .status(401)
-        .json({ message: "Unauthorized - No token provided" });
-    }
-
-    const token = authHeader.substring(7);
-
-    try {
-      const decoded = jwt.verify(token, config.jwtSecret);
-      req.user = decoded;
-      next();
-    } catch (err) {
-      logger.error(
-        `[Auth Middleware] Token verification failed: ${err.message}`
-      );
-      return res.status(401).json({ message: "Unauthorized - Invalid token" });
-    }
-  } catch (error) {
-    logger.error(`[Auth Middleware] Error: ${error.message}`);
-    return res.status(500).json({ message: "Internal server error" });
+  if (!userId) {
+    logger.warn({ path: req.path }, "Unauthorized - Missing X-User-ID header");
+    return res.status(401).json({ message: "Unauthorized - No user ID provided" });
   }
+
+  // Attach user info to request
+  req.user = {
+    userId,
+    email: req.headers["x-user-email"] || "",
+    role: req.headers["x-user-role"] || "user",
+  };
+
+  next();
 }
 
 module.exports = { isAuthenticated };

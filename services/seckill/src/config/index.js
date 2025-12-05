@@ -17,9 +17,6 @@ const config = {
   // Admin authentication
   adminKey: process.env.SECKILL_ADMIN_KEY || 'seckill-admin-key',
   
-  // JWT configuration
-  jwtSecret: sharedConfig.JWT_SECRET,
-  
   // Rate limiting configuration
   rateLimit: parseNumber(process.env.SECKILL_RATE_LIMIT, 5),
   rateWindow: parseNumber(process.env.SECKILL_RATE_WINDOW, 1),

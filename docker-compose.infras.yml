@@ -1,0 +1,100 @@
+# Infrastructure Node (VM3 - RabbitMQ, Redis, Jaeger, Auth, Product)
+# Usage: docker compose --env-file .env.infras-node -f docker-compose.infras.yml up -d
+
+services:
+  #----------------------------------------------------------------
+  # 1. Nginx Internal Gateway
+  #----------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx-infras.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth
+      - product
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 2. Infrastructure Services
+  #----------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: 'rabbitmq'
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: 'redis'
+    ports:
+      - "6379:6379"
+    networks:
+      - ecommerce-network
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: 'jaeger'
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    networks:
+      - ecommerce-network
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  #----------------------------------------------------------------
+  # 3. Support Services (Read-Heavy / Light)
+  #----------------------------------------------------------------
+  auth:
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
+    env_file:
+      - .env.infras-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3001
+      - MONGODB_AUTH_URI=${MONGODB_AUTH_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    networks:
+      - ecommerce-network
+
+  product:
+    build:
+      context: .
+      dockerfile: ./services/product/Dockerfile
+    env_file:
+      - .env.infras-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3004
+      - MONGODB_PRODUCT_URI=${MONGODB_PRODUCT_URI}
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - INVENTORY_URL=http://${COLD_NODE_IP}:3005
+      - JAEGER_ENDPOINT=http://jaeger:4318/v1/traces
+    depends_on:
+      - rabbitmq
+    networks:
+      - ecommerce-network
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  redis_data:

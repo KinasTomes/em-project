@@ -1,25 +1,30 @@
-const jwt = require("jsonwebtoken");
-const config = require("@ecommerce/config");
+const logger = require("@ecommerce/logger");
 
+/**
+ * Authentication middleware - trusts API Gateway
+ * 
+ * API Gateway đã verify JWT và set các headers:
+ * - x-user-id: User ID từ token
+ * - x-user-email: Email (optional)
+ * - x-user-role: Role (optional)
+ * - x-auth-verified: 'true' nếu đã verify
+ */
 function isAuthenticated(req, res, next) {
-  // Check for the presence of an authorization header
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
+  const userId = req.headers["x-user-id"];
+
+  if (!userId) {
+    logger.warn({ path: req.path }, "Unauthorized - Missing X-User-ID header");
     return res.status(401).json({ message: "Unauthorized" });
   }
 
-  // Extract the token from the header
-  const token = authHeader.split(" ")[1];
+  // Attach user info to request
+  req.user = {
+    userId,
+    email: req.headers["x-user-email"] || "",
+    role: req.headers["x-user-role"] || "user",
+  };
 
-  try {
-    // Verify the token using the JWT library and the secret key
-    const decodedToken = jwt.verify(token, config.JWT_SECRET);
-    req.user = decodedToken;
-    next();
-  } catch (err) {
-    console.error(err);
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  next();
 }
 
 module.exports = isAuthenticated;

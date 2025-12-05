@@ -1,0 +1,88 @@
+# Hot Node (VM1 - API Gateway, Seckill)
+# Usage: docker compose --env-file .env.hot-node -f docker-compose.hot-node.yml up -d
+
+services:
+  #----------------------------------------------------------------
+  # 1. Nginx Load Balancer (Entry Point for Seckill)
+  #----------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "3007:80"  # Expose port 3007 ra ngoài, map vào nginx port 80
+    volumes:
+      - ./nginx-hot.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - seckill
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 2. API Gateway Service
+  #----------------------------------------------------------------
+  api-gateway:
+    build:
+      context: .
+      dockerfile: ./services/api-gateway/Dockerfile
+    env_file:
+      - .env.hot-node
+    ports:
+      - "${API_GATEWAY_PORT:-3003}:3003"
+    environment:
+      - DISABLE_RATE_LIMIT=true
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${API_GATEWAY_PORT:-3003}
+      - AUTH_SERVICE_URL=http://${INFRAS_NODE_IP}/auth
+      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}/products
+      - ORDER_SERVICE_URL=http://${COLD_NODE_IP}:3002
+      - INVENTORY_SERVICE_URL=http://${COLD_NODE_IP}:3005
+      - SECKILL_SERVICE_URL=http://nginx:80
+      - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - nginx
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 3. Seckill Service (Flash Sale) - Multiple Replicas
+  #----------------------------------------------------------------
+  seckill:
+    build:
+      context: .
+      dockerfile: ./services/seckill/Dockerfile
+    env_file:
+      - .env.hot-node
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3007
+      - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
+      - REDIS_SECKILL_URL=redis://redis-seckill:6380
+      - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
+      - SECKILL_ADMIN_KEY=${SECKILL_ADMIN_KEY:-seckill-admin-key}
+    depends_on:
+      - redis-seckill
+    deploy:
+      replicas: 4
+    networks:
+      - ecommerce-network
+
+  #----------------------------------------------------------------
+  # 4. Redis Seckill (Dedicated)
+  #----------------------------------------------------------------
+  redis-seckill:
+    image: redis:7-alpine
+    container_name: 'redis-seckill'
+    ports:
+      - "6380:6380"
+    networks:
+      - ecommerce-network
+    volumes:
+      - redis_seckill_data:/data
+    command: redis-server --port 6380 --maxmemory-policy noeviction --appendonly yes
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  redis_seckill_data:

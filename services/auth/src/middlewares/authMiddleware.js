@@ -1,37 +1,31 @@
-const jwt = require("jsonwebtoken");
-const config = require("../config");
+const logger = require("@ecommerce/logger");
 const { recordTokenOperation } = require("../metrics");
 
 /**
- * Middleware to verify the token
- * Supports both x-auth-token header and Authorization Bearer token
- * Priority: x-auth-token > Authorization
+ * Authentication middleware - trusts API Gateway
+ * 
+ * API Gateway đã verify JWT và set các headers:
+ * - x-user-id: User ID từ token
+ * - x-user-email: Email (optional)
+ * - x-user-role: Role (optional)
+ * - x-auth-verified: 'true' nếu đã verify
  */
-
 module.exports = function(req, res, next) {
-  // Try x-auth-token first (higher priority)
-  let token = req.header("x-auth-token");
-  
-  // If not found, try Authorization header
-  if (!token) {
-    const authHeader = req.header("Authorization");
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      token = authHeader.substring(7); // Remove "Bearer " prefix
-    }
+  const userId = req.headers["x-user-id"];
+
+  if (!userId) {
+    logger.warn({ path: req.path }, "Unauthorized - Missing X-User-ID header");
+    recordTokenOperation('verify', 'failed');
+    return res.status(401).json({ message: "No authorization, access denied" });
   }
 
-  if (!token) {
-    recordTokenOperation('verify', 'failed');
-    return res.status(401).json({ message: "No token, authorization denied" });
-  }
+  // Attach user info to request
+  req.user = {
+    userId,
+    email: req.headers["x-user-email"] || "",
+    role: req.headers["x-user-role"] || "user",
+  };
 
-  try {
-    const decoded = jwt.verify(token, config.jwtSecret);
-    req.user = decoded;
-    recordTokenOperation('verify', 'success');
-    next();
-  } catch (e) {
-    recordTokenOperation('verify', 'failed');
-    res.status(400).json({ message: "Token is not valid" });
-  }
+  recordTokenOperation('verify', 'success');
+  next();
 };
