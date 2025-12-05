@@ -22,6 +22,8 @@ let idempotencyService = null
  * Supports two modes:
  * - Regular order: Full validation with business rules
  * - Seckill order: "Blind Update" - trust Redis, just do atomic DB update
+ * 
+ * Includes retry logic for MongoDB Write Conflicts (transient errors)
  */
 async function handleOrderCreated(message, metadata = {}) {
 	const { orderId, products } = message
@@ -38,62 +40,139 @@ async function handleOrderCreated(message, metadata = {}) {
 		`📦 [Inventory] Handling RESERVE request (${isSeckill ? 'Seckill Blind Update' : 'Regular Batch'})`
 	)
 
-	const session = await mongoose.startSession()
-	session.startTransaction()
+	// Retry configuration for Write Conflicts
+	const MAX_RETRIES = 3
+	const RETRY_DELAY_MS = 100
 
-	try {
-		let result
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		const session = await mongoose.startSession()
+		session.startTransaction()
 
-		if (isSeckill) {
-			// SECKILL LOGIC: "Blind Update" - Trust Redis, atomic DB update
-			// Redis has already validated and reserved. Just sync DB state.
-			result = await handleSeckillReserve(products, session, {
-				orderId,
-				correlationId: correlatedId,
-			})
-		} else {
-			// REGULAR ORDER LOGIC: Full validation with business rules
-			result = await inventoryService.reserveStockBatch(products, session, {
-				orderId,
-				correlationId: correlatedId,
-			})
-		}
+		try {
+			let result
 
-		if (result.success) {
-			await outboxManager.createEvent({
-				eventType: 'INVENTORY_RESERVED_SUCCESS',
-				payload: {
-					type: 'INVENTORY_RESERVED_SUCCESS',
-					data: {
-						orderId,
-						products,
-						timestamp: new Date().toISOString(),
-					},
-				},
-				session,
-				eventId: `${baseEventId}:reserved`,
-				correlationId: correlatedId,
-				routingKey: 'inventory.reserved.success',
-			})
-
-			await session.commitTransaction()
-
-			logger.info(
-				{
+			if (isSeckill) {
+				// SECKILL LOGIC: "Blind Update" - Trust Redis, atomic DB update
+				// Redis has already validated and reserved. Just sync DB state.
+				result = await handleSeckillReserve(products, session, {
 					orderId,
-					productsCount: products.length,
-					routingKey: 'inventory.reserved.success',
-					isSeckill,
-				},
-				`✓ [Inventory] RESERVED_SUCCESS - queued via Outbox (${isSeckill ? 'Seckill' : 'Regular'})`
-			)
-		} else {
-			// Rollback any partial changes
-			await session.abortTransaction()
+					correlationId: correlatedId,
+				})
+			} else {
+				// REGULAR ORDER LOGIC: Full validation with business rules
+				result = await inventoryService.reserveStockBatch(products, session, {
+					orderId,
+					correlationId: correlatedId,
+				})
+			}
 
-			// Create a new session for the failure event
-			const failSession = await mongoose.startSession()
-			failSession.startTransaction()
+			if (result.success) {
+				await outboxManager.createEvent({
+					eventType: 'INVENTORY_RESERVED_SUCCESS',
+					payload: {
+						type: 'INVENTORY_RESERVED_SUCCESS',
+						data: {
+							orderId,
+							products,
+							timestamp: new Date().toISOString(),
+						},
+					},
+					session,
+					eventId: `${baseEventId}:reserved`,
+					correlationId: correlatedId,
+					routingKey: 'inventory.reserved.success',
+				})
+
+				await session.commitTransaction()
+				session.endSession()
+
+				logger.info(
+					{
+						orderId,
+						productsCount: products.length,
+						routingKey: 'inventory.reserved.success',
+						isSeckill,
+						attempt,
+					},
+					`✓ [Inventory] RESERVED_SUCCESS - queued via Outbox (${isSeckill ? 'Seckill' : 'Regular'})`
+				)
+				return // Success - exit retry loop
+			} else {
+				// Rollback any partial changes
+				await session.abortTransaction()
+				session.endSession()
+
+				// Create a new session for the failure event
+				const failSession = await mongoose.startSession()
+				failSession.startTransaction()
+
+				try {
+					await outboxManager.createEvent({
+						eventType: 'INVENTORY_RESERVED_FAILED',
+						payload: {
+							type: 'INVENTORY_RESERVED_FAILED',
+							data: {
+								orderId,
+								products,
+								reason: result.message,
+								timestamp: new Date().toISOString(),
+							},
+						},
+						session: failSession,
+						eventId: `${baseEventId}:reserve_failed`,
+						correlationId: correlatedId,
+						routingKey: 'inventory.reserved.failed',
+					})
+
+					await failSession.commitTransaction()
+
+					logger.warn(
+						{
+							orderId,
+							reason: result.message,
+							routingKey: 'inventory.reserved.failed',
+							isSeckill,
+						},
+						`✗ [Inventory] RESERVED_FAILED - ${isSeckill ? 'DB sync failed (Redis/DB mismatch)' : 'insufficient stock'}, queued via Outbox`
+					)
+				} catch (failError) {
+					await failSession.abortTransaction()
+					throw failError
+				} finally {
+					failSession.endSession()
+				}
+				return // Business logic failure - don't retry
+			}
+		} catch (error) {
+			await session.abortTransaction()
+			session.endSession()
+
+			// Check if this is a Write Conflict (retryable)
+			const isWriteConflict = error.message && (
+				error.message.includes('Write conflict') ||
+				error.message.includes('WriteConflict') ||
+				error.code === 112 // MongoDB WriteConflict error code
+			)
+
+			if (isWriteConflict && attempt < MAX_RETRIES) {
+				logger.warn(
+					{ orderId, attempt, maxRetries: MAX_RETRIES, error: error.message },
+					`⚠️ [Inventory] Write conflict detected, retrying (${attempt}/${MAX_RETRIES})...`
+				)
+				// Exponential backoff: 100ms, 200ms, 400ms
+				await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)))
+				continue // Retry
+			}
+
+			// Non-retryable error or max retries exceeded
+			logger.error(
+				{ error: error.message, orderId, isSeckill, attempt },
+				'❌ [Inventory] Error processing RESERVE request'
+			)
+
+			// Create failure event in separate transaction
+			const errorSession = await mongoose.startSession()
+			errorSession.startTransaction()
 
 			try {
 				await outboxManager.createEvent({
@@ -103,77 +182,29 @@ async function handleOrderCreated(message, metadata = {}) {
 						data: {
 							orderId,
 							products,
-							reason: result.message,
+							reason: error.message,
 							timestamp: new Date().toISOString(),
 						},
 					},
-					session: failSession,
-					eventId: `${baseEventId}:reserve_failed`,
+					session: errorSession,
+					eventId: `${baseEventId}:reserve_error`,
 					correlationId: correlatedId,
 					routingKey: 'inventory.reserved.failed',
 				})
 
-				await failSession.commitTransaction()
-
-				logger.warn(
-					{
-						orderId,
-						reason: result.message,
-						routingKey: 'inventory.reserved.failed',
-						isSeckill,
-					},
-					`✗ [Inventory] RESERVED_FAILED - ${isSeckill ? 'DB sync failed (Redis/DB mismatch)' : 'insufficient stock'}, queued via Outbox`
+				await errorSession.commitTransaction()
+			} catch (outboxError) {
+				await errorSession.abortTransaction()
+				logger.error(
+					{ error: outboxError.message, orderId },
+					'❌ [Inventory] Failed to create outbox event for error'
 				)
-			} catch (failError) {
-				await failSession.abortTransaction()
-				throw failError
 			} finally {
-				failSession.endSession()
+				errorSession.endSession()
 			}
+			return // Exit after handling error
 		}
-	} catch (error) {
-		await session.abortTransaction()
-
-		logger.error(
-			{ error: error.message, orderId, isSeckill },
-			'❌ [Inventory] Error processing RESERVE request'
-		)
-
-		// Create failure event in separate transaction
-		const errorSession = await mongoose.startSession()
-		errorSession.startTransaction()
-
-		try {
-			await outboxManager.createEvent({
-				eventType: 'INVENTORY_RESERVED_FAILED',
-				payload: {
-					type: 'INVENTORY_RESERVED_FAILED',
-					data: {
-						orderId,
-						products,
-						reason: error.message,
-						timestamp: new Date().toISOString(),
-					},
-				},
-				session: errorSession,
-				eventId: `${baseEventId}:reserve_error`,
-				correlationId: correlatedId,
-				routingKey: 'inventory.reserved.failed',
-			})
-
-			await errorSession.commitTransaction()
-		} catch (outboxError) {
-			await errorSession.abortTransaction()
-			logger.error(
-				{ error: outboxError.message, orderId },
-				'❌ [Inventory] Failed to create outbox event for error'
-			)
-		} finally {
-			errorSession.endSession()
-		}
-	} finally {
-		session.endSession()
-	}
+	} // End of retry loop
 }
 
 /**

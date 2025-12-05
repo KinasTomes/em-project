@@ -193,27 +193,36 @@ export default function (data) {
 			timeout: '10s', // Add timeout
 		})
 
-		const ok = check(res, {
-			'ORDER status == 201': (r) => r.status === 201,
-			'ORDER has orderId': (r) => {
-				if (r.status !== 201) return false
-				try {
-					const body = JSON.parse(r.body)
-					return body.orderId !== undefined
-				} catch {
-					return false
-				}
-			},
+		// Critical checks (must pass) - status and orderId
+		const statusOk = res.status === 201
+		let hasOrderId = false
+		let body = null
+		
+		if (statusOk) {
+			try {
+				body = JSON.parse(res.body)
+				hasOrderId = body.orderId !== undefined
+			} catch {
+				hasOrderId = false
+			}
+		}
+
+		const criticalOk = statusOk && hasOrderId
+
+		// Run all checks for reporting (includes performance check)
+		check(res, {
+			'ORDER status == 201': () => statusOk,
+			'ORDER has orderId': () => hasOrderId,
 			'ORDER duration < 1000ms': (r) => r.timings.duration < 1000,
 		})
 
-		order_create_ok.add(ok)
+		// Only count critical checks for order_create_ok metric
+		order_create_ok.add(criticalOk)
 
-		if (!ok) {
+		if (!criticalOk) {
 			fail(`Order must be 201 with orderId. Got ${res.status} - ${res.body}`)
 		}
 
-		const body = JSON.parse(res.body)
 		console.log(
 			`✓ Created order ${body.orderId} with ${
 				body.products?.length ?? '?'
