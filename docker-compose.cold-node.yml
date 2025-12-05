@@ -36,7 +36,8 @@ services:
       - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
       - REDIS_URL=redis://${INFRAS_NODE_IP}:6379
       - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
-      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}/products/
+      # Order service gọi /api/products -> nginx forward đến product:3004/api/products
+      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}
     deploy:
       replicas: 4
     networks:
