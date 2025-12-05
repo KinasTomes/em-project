@@ -7,7 +7,11 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "mocha --timeout 20000 'src/**/*.test.js' --exit",
-    "test:property": "mocha --timeout 30000 'src/**/*.property.test.js' --exit"
+    "test:property": "mocha --timeout 60000 'src/tests/**/*.test.js' --exit",
+    "test:property:campaign": "mocha --timeout 60000 'src/tests/property1-3.campaign.test.js' --exit",
+    "test:property:purchase": "mocha --timeout 60000 'src/tests/property4-5.purchase.test.js' --exit",
+    "test:property:concurrency": "mocha --timeout 60000 'src/tests/property6.concurrency.test.js' --exit",
+    "test:property:release": "mocha --timeout 60000 'src/tests/property7-9.release.test.js' --exit"
   },
   "keywords": [
     "seckill",

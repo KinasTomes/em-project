@@ -1,30 +1,35 @@
 /**
- * Property-Based Tests for Seckill Service
+ * Property-Based Tests for Seckill Service - Campaign Properties (1, 2, 3)
  * 
- * Tests Properties 1, 2, and 3 from the design document
+ * Property 1: Campaign Data Round Trip
+ * Property 2: Invalid Campaign Rejection
+ * Property 3: Campaign Re-initialization Clears Winners
  */
 
 const { describe, it, before, after, beforeEach } = require('mocha')
 const { expect } = require('chai')
 const fc = require('fast-check')
-const { createClient } = require('redis')
 
-const REDIS_URL = process.env.REDIS_SECKILL_URL || process.env.REDIS_URL || 'redis://127.0.0.1:6379'
+const {
+  createRedisClient,
+  initCampaign,
+  getStatus,
+  addWinners,
+  getWinnersCount,
+  cleanupTestKeys,
+  generateProductId,
+  validCampaignArb,
+  uniqueUserIdsArb,
+} = require('./helpers/testHelpers')
 
-describe('Seckill Service Property Tests', function () {
+describe('Seckill Campaign Property Tests', function () {
   this.timeout(60000)
 
   let client
 
   before(async function () {
-    client = createClient({ url: REDIS_URL })
-    
-    client.on('error', (err) => {
-      console.error('Redis error:', err.message)
-    })
-
     try {
-      await client.connect()
+      client = await createRedisClient()
     } catch (err) {
       console.log('Redis not available, skipping tests')
       this.skip()
@@ -38,114 +43,10 @@ describe('Seckill Service Property Tests', function () {
   })
 
   beforeEach(async function () {
-    // Clean up test keys
     const keys = await client.keys('seckill:test:*')
     if (keys.length > 0) {
       await client.del(keys)
     }
-  })
-
-  /**
-   * Helper to initialize a campaign directly in Redis (simulating seckillService.initCampaign)
-   */
-  async function initCampaign(productId, params) {
-    const { stock, price, startTime, endTime } = params
-    const keys = {
-      stock: `seckill:test:${productId}:stock`,
-      total: `seckill:test:${productId}:total`,
-      price: `seckill:test:${productId}:price`,
-      start: `seckill:test:${productId}:start`,
-      end: `seckill:test:${productId}:end`,
-      users: `seckill:test:${productId}:users`,
-    }
-
-    const multi = client.multi()
-    multi.set(keys.stock, String(stock))
-    multi.set(keys.total, String(stock))
-    multi.set(keys.price, String(price))
-    multi.set(keys.start, startTime)
-    multi.set(keys.end, endTime)
-    multi.del(keys.users)
-    await multi.exec()
-
-    return { success: true, productId, stock, price, startTime, endTime }
-  }
-
-
-  /**
-   * Helper to get campaign status from Redis (simulating seckillService.getStatus)
-   */
-  async function getStatus(productId) {
-    const keys = {
-      stock: `seckill:test:${productId}:stock`,
-      total: `seckill:test:${productId}:total`,
-      price: `seckill:test:${productId}:price`,
-      start: `seckill:test:${productId}:start`,
-      end: `seckill:test:${productId}:end`,
-    }
-
-    const [stock, total, price, startTime, endTime] = await Promise.all([
-      client.get(keys.stock),
-      client.get(keys.total),
-      client.get(keys.price),
-      client.get(keys.start),
-      client.get(keys.end),
-    ])
-
-    if (stock === null || total === null) {
-      return null
-    }
-
-    const now = new Date()
-    const start = new Date(startTime)
-    const end = new Date(endTime)
-    const isActive = now >= start && now <= end
-
-    return {
-      productId,
-      stockRemaining: parseInt(stock, 10),
-      totalStock: parseInt(total, 10),
-      price: parseFloat(price) || 0,
-      isActive,
-      startTime,
-      endTime,
-    }
-  }
-
-  /**
-   * Helper to add users to winners set
-   */
-  async function addWinners(productId, userIds) {
-    const usersKey = `seckill:test:${productId}:users`
-    if (userIds.length > 0) {
-      await client.sAdd(usersKey, userIds)
-    }
-  }
-
-  /**
-   * Helper to get winners count
-   */
-  async function getWinnersCount(productId) {
-    const usersKey = `seckill:test:${productId}:users`
-    return client.sCard(usersKey)
-  }
-
-  /**
-   * Generator for valid campaign parameters
-   */
-  const validCampaignArb = fc.record({
-    stock: fc.integer({ min: 1, max: 10000 }),
-    // Use integer for price in cents, then convert to dollars
-    priceCents: fc.integer({ min: 1, max: 9999999 }),
-    // Generate start time in the past or future
-    startOffset: fc.integer({ min: -86400000, max: 86400000 }), // -1 day to +1 day in ms
-    duration: fc.integer({ min: 3600000, max: 604800000 }), // 1 hour to 7 days in ms
-  }).map(({ stock, priceCents, startOffset, duration }) => {
-    const now = Date.now()
-    const startTime = new Date(now + startOffset).toISOString()
-    const endTime = new Date(now + startOffset + duration).toISOString()
-    const price = priceCents / 100 // Convert cents to dollars
-    return { stock, price, startTime, endTime }
   })
 
   /**
@@ -163,16 +64,13 @@ describe('Seckill Service Property Tests', function () {
         fc.asyncProperty(
           validCampaignArb,
           async (params) => {
-            const productId = `test-roundtrip-${Date.now()}-${Math.random().toString(36).slice(2)}`
+            const productId = generateProductId('roundtrip')
 
-            // Initialize campaign
-            const initResult = await initCampaign(productId, params)
+            const initResult = await initCampaign(client, productId, params)
             expect(initResult.success).to.be.true
 
-            // Retrieve status
-            const status = await getStatus(productId)
+            const status = await getStatus(client, productId)
 
-            // Verify round trip
             expect(status).to.not.be.null
             expect(status.productId).to.equal(productId)
             expect(status.stockRemaining).to.equal(params.stock)
@@ -181,19 +79,13 @@ describe('Seckill Service Property Tests', function () {
             expect(status.startTime).to.equal(params.startTime)
             expect(status.endTime).to.equal(params.endTime)
 
-            // Clean up
-            await client.del(`seckill:test:${productId}:stock`)
-            await client.del(`seckill:test:${productId}:total`)
-            await client.del(`seckill:test:${productId}:price`)
-            await client.del(`seckill:test:${productId}:start`)
-            await client.del(`seckill:test:${productId}:end`)
+            await cleanupTestKeys(client, productId)
           }
         ),
         { numRuns: 100, verbose: true }
       )
     })
   })
-
 
   /**
    * **Feature: seckill-service, Property 2: Invalid Campaign Rejection**
@@ -205,12 +97,8 @@ describe('Seckill Service Property Tests', function () {
    * **Validates: Requirements 1.2**
    */
   describe('Property 2: Invalid Campaign Rejection', function () {
-    // Import the schema for validation testing
     const { CampaignInitSchema } = require('../schemas/seckillEvents.schema')
 
-    /**
-     * Generator for campaign params with random missing fields
-     */
     const invalidCampaignArb = fc.record({
       stock: fc.option(fc.integer({ min: 1, max: 10000 }), { nil: undefined }),
       price: fc.option(fc.integer({ min: 1, max: 9999999 }).map(c => c / 100), { nil: undefined }),
@@ -218,7 +106,6 @@ describe('Seckill Service Property Tests', function () {
       endTime: fc.option(fc.date().map(d => d.toISOString()), { nil: undefined }),
       productId: fc.option(fc.string({ minLength: 1, maxLength: 50 }), { nil: undefined }),
     }).filter(params => {
-      // Ensure at least one required field is missing
       return (
         params.stock === undefined ||
         params.price === undefined ||
@@ -234,18 +121,12 @@ describe('Seckill Service Property Tests', function () {
           invalidCampaignArb,
           async (params) => {
             let rejected = false
-            let error = null
-
             try {
               CampaignInitSchema.parse(params)
             } catch (e) {
               rejected = true
-              error = e
             }
-
-            // Should be rejected
             expect(rejected).to.be.true
-            expect(error).to.not.be.null
           }
         ),
         { numRuns: 100, verbose: true }
@@ -271,7 +152,6 @@ describe('Seckill Service Property Tests', function () {
             } catch (e) {
               rejected = true
             }
-
             expect(rejected).to.be.true
           }
         ),
@@ -298,7 +178,6 @@ describe('Seckill Service Property Tests', function () {
             } catch (e) {
               rejected = true
             }
-
             expect(rejected).to.be.true
           }
         ),
@@ -307,7 +186,6 @@ describe('Seckill Service Property Tests', function () {
     })
 
     it('should reject campaign with endTime before startTime', async function () {
-      // Use constrained date range to avoid invalid dates
       const validDateArb = fc.date({ 
         min: new Date('2020-01-01'), 
         max: new Date('2030-12-31') 
@@ -316,10 +194,10 @@ describe('Seckill Service Property Tests', function () {
       await fc.assert(
         fc.asyncProperty(
           validDateArb,
-          fc.integer({ min: 1, max: 86400000 }), // 1ms to 1 day
+          fc.integer({ min: 1, max: 86400000 }),
           async (baseDate, offset) => {
             const startTime = new Date(baseDate.getTime() + offset).toISOString()
-            const endTime = new Date(baseDate.getTime()).toISOString() // endTime before startTime
+            const endTime = new Date(baseDate.getTime()).toISOString()
 
             const params = {
               productId: 'test-product',
@@ -335,7 +213,6 @@ describe('Seckill Service Property Tests', function () {
             } catch (e) {
               rejected = true
             }
-
             expect(rejected).to.be.true
           }
         ),
@@ -343,7 +220,6 @@ describe('Seckill Service Property Tests', function () {
       )
     })
   })
-
 
   /**
    * **Feature: seckill-service, Property 3: Campaign Re-initialization Clears Winners**
@@ -355,55 +231,36 @@ describe('Seckill Service Property Tests', function () {
    * **Validates: Requirements 1.3**
    */
   describe('Property 3: Campaign Re-initialization Clears Winners', function () {
-    /**
-     * Generator for user IDs
-     */
-    const userIdsArb = fc.array(
-      fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
-      { minLength: 1, maxLength: 50 }
-    )
-
+    // FIX: Use uniqueUserIdsArb to ensure no duplicate user IDs
     it('should clear winners set when campaign is re-initialized', async function () {
       await fc.assert(
         fc.asyncProperty(
           validCampaignArb,
           validCampaignArb,
-          userIdsArb,
+          uniqueUserIdsArb,
           async (initialParams, newParams, userIds) => {
-            const productId = `test-reinit-${Date.now()}-${Math.random().toString(36).slice(2)}`
+            const productId = generateProductId('reinit')
 
-            // Initialize campaign
-            await initCampaign(productId, initialParams)
+            await initCampaign(client, productId, initialParams)
+            await addWinners(client, productId, userIds)
 
-            // Add users to winners set
-            await addWinners(productId, userIds)
-
-            // Verify users were added
-            const winnersBeforeReinit = await getWinnersCount(productId)
+            // Verify users were added (use unique count)
+            const winnersBeforeReinit = await getWinnersCount(client, productId)
             expect(winnersBeforeReinit).to.equal(userIds.length)
 
-            // Re-initialize campaign with new params
-            await initCampaign(productId, newParams)
+            await initCampaign(client, productId, newParams)
 
-            // Verify winners set is cleared
-            const winnersAfterReinit = await getWinnersCount(productId)
+            const winnersAfterReinit = await getWinnersCount(client, productId)
             expect(winnersAfterReinit).to.equal(0)
 
-            // Verify new campaign data
-            const status = await getStatus(productId)
+            const status = await getStatus(client, productId)
             expect(status.stockRemaining).to.equal(newParams.stock)
             expect(status.totalStock).to.equal(newParams.stock)
             expect(status.price).to.equal(newParams.price)
             expect(status.startTime).to.equal(newParams.startTime)
             expect(status.endTime).to.equal(newParams.endTime)
 
-            // Clean up
-            await client.del(`seckill:test:${productId}:stock`)
-            await client.del(`seckill:test:${productId}:total`)
-            await client.del(`seckill:test:${productId}:price`)
-            await client.del(`seckill:test:${productId}:start`)
-            await client.del(`seckill:test:${productId}:end`)
-            await client.del(`seckill:test:${productId}:users`)
+            await cleanupTestKeys(client, productId)
           }
         ),
         { numRuns: 100, verbose: true }
@@ -416,30 +273,21 @@ describe('Seckill Service Property Tests', function () {
           validCampaignArb,
           validCampaignArb,
           async (initialParams, newParams) => {
-            const productId = `test-reinit-empty-${Date.now()}-${Math.random().toString(36).slice(2)}`
+            const productId = generateProductId('reinit-empty')
 
-            // Initialize campaign (no winners)
-            await initCampaign(productId, initialParams)
+            await initCampaign(client, productId, initialParams)
 
-            // Verify initial state
-            const initialStatus = await getStatus(productId)
+            const initialStatus = await getStatus(client, productId)
             expect(initialStatus.stockRemaining).to.equal(initialParams.stock)
 
-            // Re-initialize with new params
-            await initCampaign(productId, newParams)
+            await initCampaign(client, productId, newParams)
 
-            // Verify updated data
-            const newStatus = await getStatus(productId)
+            const newStatus = await getStatus(client, productId)
             expect(newStatus.stockRemaining).to.equal(newParams.stock)
             expect(newStatus.totalStock).to.equal(newParams.stock)
             expect(newStatus.price).to.equal(newParams.price)
 
-            // Clean up
-            await client.del(`seckill:test:${productId}:stock`)
-            await client.del(`seckill:test:${productId}:total`)
-            await client.del(`seckill:test:${productId}:price`)
-            await client.del(`seckill:test:${productId}:start`)
-            await client.del(`seckill:test:${productId}:end`)
+            await cleanupTestKeys(client, productId)
           }
         ),
         { numRuns: 50, verbose: true }
