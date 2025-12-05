@@ -32,7 +32,7 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - PORT=${API_GATEWAY_PORT:-3003}
       - AUTH_SERVICE_URL=http://${INFRAS_NODE_IP}/auth
-      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}/products
+      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}
       - ORDER_SERVICE_URL=http://${COLD_NODE_IP}:3002
       - INVENTORY_SERVICE_URL=http://${COLD_NODE_IP}:3005
       - SECKILL_SERVICE_URL=http://nginx-hot:80
