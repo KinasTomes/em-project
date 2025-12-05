@@ -5,6 +5,8 @@ const logger = require('@ecommerce/logger')
 const redisClient = require('../config/redis')
 const config = require('../config')
 const { CampaignInitSchema } = require('../schemas/seckillEvents.schema')
+const metrics = require('../metrics')
+const tracing = require('../tracing')
 
 // Emergency log file for Ghost Order fallback
 const EMERGENCY_LOG_PATH = path.join(__dirname, '../../logs/emergency-events.log')
@@ -71,6 +73,11 @@ class SeckillService {
 
     logger.info({ productId, stock, price, startTime, endTime }, 'Seckill campaign initialized')
 
+    // Record metrics
+    metrics.recordCampaignInitialized(productId)
+    metrics.setStockRemaining(productId, stock)
+    metrics.recordSeckillRequest('init', 'success')
+
     return {
       success: true,
       productId,
@@ -95,6 +102,9 @@ class SeckillService {
     const window = Math.floor(Date.now() / 1000 / config.rateWindow)
     const rateLimitKey = `seckill:ratelimit:${userId}:${window}`
 
+    // Start latency timer
+    const endTimer = metrics.startReserveTimer()
+
     // Execute atomic Lua script
     const result = await redisClient.evalSha('reserve', {
       keys: [stockKey, usersKey, rateLimitKey],
@@ -103,22 +113,34 @@ class SeckillService {
 
     // Handle Lua script return codes
     if (result === -4) {
+      endTimer({ status: 'rate_limited' })
+      metrics.recordSeckillRequest('buy', 'rate_limited')
       return { success: false, error: 'RATE_LIMIT_EXCEEDED' }
     }
     if (result === -2) {
+      endTimer({ status: 'already_purchased' })
+      metrics.recordSeckillRequest('buy', 'already_purchased')
       return { success: false, error: 'ALREADY_PURCHASED' }
     }
     if (result === -3) {
+      endTimer({ status: 'campaign_not_started' })
+      metrics.recordSeckillRequest('buy', 'campaign_not_started')
       return { success: false, error: 'CAMPAIGN_NOT_STARTED' }
     }
     if (result === -1) {
+      endTimer({ status: 'out_of_stock' })
+      metrics.recordSeckillRequest('buy', 'out_of_stock')
       return { success: false, error: 'OUT_OF_STOCK' }
     }
+
+    // Record successful reserve latency
+    endTimer({ status: 'success' })
 
     // Success - generate orderId and publish event
     const orderId = uuidv4()
     const eventId = uuidv4()
-    const correlationId = uuidv4()
+    // Use trace ID as correlationId for distributed tracing, fallback to UUID
+    const correlationId = tracing.getCurrentTraceId() || uuidv4()
 
     // Get price for the event
     const price = await redisClient.get(`seckill:${productId}:price`)
@@ -147,13 +169,37 @@ class SeckillService {
       // Ghost Order fallback: log to emergency file for manual replay
       logger.error({ error: error.message, orderId, userId, productId }, 'Failed to publish seckill.order.won event')
       this._logEmergencyEvent({ orderId, eventId, correlationId, eventData, error: error.message })
+      // Record publish failure metric
+      metrics.recordPublishFailure('seckill.order.won')
     }
+
+    // Record successful buy request
+    metrics.recordSeckillRequest('buy', 'success')
+
+    // Update stock remaining metric (async, don't block response)
+    this._updateStockMetric(productId)
 
     return {
       success: true,
       orderId,
       userId,
       productId,
+    }
+  }
+
+  /**
+   * Update stock remaining metric asynchronously
+   * @private
+   * @param {string} productId - Product identifier
+   */
+  async _updateStockMetric(productId) {
+    try {
+      const stock = await redisClient.get(`seckill:${productId}:stock`)
+      if (stock !== null) {
+        metrics.setStockRemaining(productId, parseInt(stock, 10))
+      }
+    } catch (error) {
+      logger.warn({ error: error.message, productId }, 'Failed to update stock metric')
     }
   }
 
@@ -183,6 +229,7 @@ class SeckillService {
 
     // Campaign not found
     if (stock === null || total === null) {
+      metrics.recordSeckillRequest('status', 'not_found')
       return null
     }
 
@@ -191,9 +238,15 @@ class SeckillService {
     const end = new Date(endTime)
     const isActive = now >= start && now <= end
 
+    const stockRemaining = parseInt(stock, 10)
+
+    // Update stock metric and record request
+    metrics.setStockRemaining(productId, stockRemaining)
+    metrics.recordSeckillRequest('status', 'success')
+
     return {
       productId,
-      stockRemaining: parseInt(stock, 10),
+      stockRemaining,
       totalStock: parseInt(total, 10),
       price: parseFloat(price) || 0,
       isActive,
@@ -227,12 +280,14 @@ class SeckillService {
     if (result === -1) {
       // User not found - idempotent success
       logger.info({ userId, productId }, 'Slot release: user not found (already released or never purchased)')
+      metrics.recordSeckillRequest('release', 'not_found')
       return { success: true, released: false, message: 'User not found in winners set' }
     }
 
     // Success - publish seckill.released event
     const eventId = uuidv4()
-    const correlationId = uuidv4()
+    // Use trace ID as correlationId for distributed tracing, fallback to UUID
+    const correlationId = tracing.getCurrentTraceId() || uuidv4()
 
     const eventData = {
       orderId: orderId || 'unknown',
@@ -251,7 +306,16 @@ class SeckillService {
     } catch (error) {
       logger.error({ error: error.message, orderId, userId, productId }, 'Failed to publish seckill.released event')
       this._logEmergencyEvent({ orderId, eventId, correlationId, eventData, error: error.message })
+      // Record publish failure metric
+      metrics.recordPublishFailure('seckill.released')
     }
+
+    // Record metrics
+    metrics.recordSlotReleased(productId)
+    metrics.recordSeckillRequest('release', 'success')
+
+    // Update stock remaining metric (async, don't block response)
+    this._updateStockMetric(productId)
 
     logger.info({ userId, productId }, 'Seckill slot released successfully')
     return { success: true, released: true }

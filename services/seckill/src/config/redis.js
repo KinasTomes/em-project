@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const logger = require('@ecommerce/logger')
 const config = require('./index')
+const tracing = require('../tracing')
 
 class RedisClient {
   constructor() {
@@ -92,22 +93,33 @@ class RedisClient {
       throw new Error(`Script '${scriptName}' not loaded`)
     }
 
+    // Start tracing span for Lua script execution
+    const span = tracing.startLuaScriptSpan(scriptName, {
+      'db.lua.keys_count': keys.length,
+      'db.lua.args_count': args.length,
+    })
+
     try {
       const result = await this.client.evalSha(sha, {
         keys,
         arguments: args
       })
+      
+      tracing.endSpanSuccess(span, { 'db.lua.result': result })
       return result
     } catch (error) {
       // If script not found in cache, reload and retry
       if (error.message.includes('NOSCRIPT')) {
         logger.warn({ script: scriptName }, 'Script not in cache, reloading...')
         await this.loadScripts()
-        return this.client.evalSha(this.scriptSHAs[scriptName], {
+        const retryResult = await this.client.evalSha(this.scriptSHAs[scriptName], {
           keys,
           arguments: args
         })
+        tracing.endSpanSuccess(span, { 'db.lua.result': retryResult, 'db.lua.reloaded': true })
+        return retryResult
       }
+      tracing.endSpanError(span, error)
       throw error
     }
   }
@@ -118,7 +130,15 @@ class RedisClient {
    * @returns {Promise<string|null>}
    */
   async get(key) {
-    return this.client.get(key)
+    const span = tracing.startRedisSpan('get', { 'db.redis.key': key })
+    try {
+      const result = await this.client.get(key)
+      tracing.endSpanSuccess(span, { 'db.redis.hit': result !== null })
+      return result
+    } catch (error) {
+      tracing.endSpanError(span, error)
+      throw error
+    }
   }
 
   /**
@@ -128,7 +148,15 @@ class RedisClient {
    * @param {Object} options - Optional settings (EX, PX, etc.)
    */
   async set(key, value, options = {}) {
-    return this.client.set(key, value, options)
+    const span = tracing.startRedisSpan('set', { 'db.redis.key': key })
+    try {
+      const result = await this.client.set(key, value, options)
+      tracing.endSpanSuccess(span)
+      return result
+    } catch (error) {
+      tracing.endSpanError(span, error)
+      throw error
+    }
   }
 
   /**
