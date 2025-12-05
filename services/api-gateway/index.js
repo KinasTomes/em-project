@@ -326,9 +326,11 @@ app.use("/seckill", (req, res, next) => {
 // Admin seckill routes (separate path for clarity)
 app.use("/admin/seckill", (req, res) => {
   logger.info(
-    { path: req.path, method: req.method },
+    { path: req.path, method: req.method, originalUrl: req.originalUrl },
     "Routing to seckill admin service"
   );
+  // Restore full path for seckill service (Express strips the mount path)
+  req.url = `/admin/seckill${req.url}`;
   req.proxyTarget = 'seckill';
   proxy.web(req, res, { 
     target: config.seckillServiceUrl,
