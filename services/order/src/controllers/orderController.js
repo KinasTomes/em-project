@@ -16,7 +16,9 @@ class OrderController {
 	async createOrder(req, res) {
 		try {
 			const token = req.headers.authorization
-			if (!token) {
+			// Get user info from headers (set by API Gateway)
+			const userId = req.headers['x-user-id']
+			if (!userId) {
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 
@@ -27,7 +29,7 @@ class OrderController {
 				return res.status(400).json({ message: 'Product IDs are required' })
 			}
 
-			const username = req.user.username
+			const username = userId
 
 			// Create order via service
 			const result = await this.orderService.createOrder(
@@ -65,8 +67,9 @@ class OrderController {
 	 */
 	async getOrderById(req, res) {
 		try {
-			const token = req.headers.authorization
-			if (!token) {
+			// Get user info from headers (set by API Gateway)
+			const userId = req.headers['x-user-id']
+			if (!userId) {
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 
@@ -102,12 +105,13 @@ class OrderController {
 	 */
 	async getMyOrders(req, res) {
 		try {
-			const token = req.headers.authorization
-			if (!token) {
+			// Get user info from headers (set by API Gateway)
+			const userId = req.headers['x-user-id']
+			if (!userId) {
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 
-			const username = req.user.username
+			const username = userId
 			const page = parseInt(req.query.page) || 1
 			const limit = parseInt(req.query.limit) || 20
 

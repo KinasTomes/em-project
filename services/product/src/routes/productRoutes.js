@@ -1,15 +1,15 @@
 const express = require("express");
 const ProductController = require("../controllers/productController");
-const isAuthenticated = require("../utils/isAuthenticated");
 
 const router = express.Router();
 const productController = new ProductController();
 
+// All routes accessible - API Gateway handles authentication
 // Product CRUD endpoints (RESTful)
-router.get("/", isAuthenticated, productController.getProducts);
-router.get("/:id", isAuthenticated, productController.getProductById);
-router.post("/", isAuthenticated, productController.createProduct);
-router.put("/:id", isAuthenticated, productController.updateProduct);
-router.delete("/:id", isAuthenticated, productController.deleteProduct);
+router.get("/", productController.getProducts);
+router.get("/:id", productController.getProductById);
+router.post("/", productController.createProduct);
+router.put("/:id", productController.updateProduct);
+router.delete("/:id", productController.deleteProduct);
 
 module.exports = router;

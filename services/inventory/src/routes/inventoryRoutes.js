@@ -1,10 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const inventoryController = require("../controllers/inventoryController");
-const { isAuthenticated } = require("../middlewares/authMiddleware");
 
-// All routes require authentication
-router.use(isAuthenticated);
+// All routes are accessible - API Gateway handles authentication
+// Services can read X-User-ID from header if needed
 
 // Get all inventory with pagination
 router.get("/", inventoryController.getAllInventory.bind(inventoryController));
