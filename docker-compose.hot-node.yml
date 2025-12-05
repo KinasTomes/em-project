@@ -5,10 +5,10 @@ services:
   #----------------------------------------------------------------
   # 1. Nginx Load Balancer (Entry Point for Seckill)
   #----------------------------------------------------------------
-  nginx:
+  nginx-hot:
     image: nginx:alpine
-    ports:
-      - "3007:80"  # Expose port 3007 ra ngoài, map vào nginx port 80
+    # ports:
+      # - "3007:80"  # Expose port 3007 ra ngoài, map vào nginx port 80
     volumes:
       - ./nginx-hot.conf:/etc/nginx/nginx.conf:ro
     depends_on:
@@ -35,11 +35,11 @@ services:
       - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}/products
       - ORDER_SERVICE_URL=http://${COLD_NODE_IP}:3002
       - INVENTORY_SERVICE_URL=http://${COLD_NODE_IP}:3005
-      - SECKILL_SERVICE_URL=http://nginx:80
+      - SECKILL_SERVICE_URL=http://nginx-hot:80
       - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
-      - nginx
+      - nginx-hot
     networks:
       - ecommerce-network
 

@@ -5,7 +5,7 @@ services:
   #----------------------------------------------------------------
   # 1. Nginx Load Balancer (Entry Point for VM 2)
   #----------------------------------------------------------------
-  nginx:
+  nginx-cold:
     image: nginx:alpine
     ports:
       - "3002:3002" # Order LB
@@ -36,7 +36,7 @@ services:
       - RABBITMQ_URL=amqp://${INFRAS_NODE_IP}:5672
       - REDIS_URL=redis://${INFRAS_NODE_IP}:6379
       - JAEGER_ENDPOINT=http://${INFRAS_NODE_IP}:4318/v1/traces
-      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}
+      - PRODUCT_SERVICE_URL=http://${INFRAS_NODE_IP}/products/
     deploy:
       replicas: 4
     networks:
