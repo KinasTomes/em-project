@@ -40,28 +40,29 @@ async function handleOrderCreated(message, metadata = {}) {
 		`📦 [Inventory] Handling RESERVE request (${isSeckill ? 'Seckill Blind Update' : 'Regular Batch'})`
 	)
 
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// CRITICAL: Atomic lock acquisition BEFORE retry loop
+	// With prefetch=50, multiple instances can receive same message
+	// Use Redis SET NX to atomically check AND lock in one operation
+	// Only ONE instance will acquire lock and proceed with processing
+	// Lock check must be OUTSIDE retry loop to avoid multiple lock attempts per retry
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	if (idempotencyService) {
+		const lockAcquired = await idempotencyService.tryAcquireProcessingLock('ORDER_CREATED', orderId)
+		if (!lockAcquired) {
+			logger.warn(
+				{ orderId, eventId, correlationId },
+				`⚠️ [Inventory] ORDER_CREATED already being processed by another instance, skipping (atomic lock)`
+			)
+			return // Another instance is handling it
+		}
+	}
+
 	// Retry configuration for Write Conflicts
 	const MAX_RETRIES = 3
 	const RETRY_DELAY_MS = 100
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-		// CRITICAL: Atomic lock acquisition to prevent duplicate processing
-		// With prefetch=50, multiple instances can receive same message
-		// Use Redis SET NX to atomically check AND lock in one operation
-		// Only ONE instance will acquire lock and proceed with processing
-		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-		if (idempotencyService) {
-			const lockAcquired = await idempotencyService.tryAcquireProcessingLock('ORDER_CREATED', orderId)
-			if (!lockAcquired) {
-				logger.warn(
-					{ orderId, attempt, eventId, correlationId },
-					`⚠️ [Inventory] ORDER_CREATED already being processed by another instance, skipping (atomic lock)`
-				)
-				return // Another instance is handling it
-			}
-		}
-
 		const session = await mongoose.startSession()
 		session.startTransaction()
 
