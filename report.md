@@ -12,12 +12,10 @@
 
 ### 🔍 Nguyên nhân gốc
 
-| Mức          | Lý do                                                          |
-| ------------ | -------------------------------------------------------------- |
-| Hệ thống     | **Không có event-driven**, mọi thứ xử lý sync                  |
-| Network      | Synchronous call Order → Product → Inventory → Payment tuần tự |
-| Database     | Write latency cao khi nhiều concurrent writes                  |
-| Blocking I/O | Chờ response từ downstream services trước khi trả về client    |
+| Mức      | Lý do                                                          |
+| -------- | -------------------------------------------------------------- |
+| Hệ thống | **Không có event-driven**, mọi thứ xử lý sync                  |
+| Network  | Synchronous call Order → Product → Inventory → Payment tuần tự |
 
 ---
 
