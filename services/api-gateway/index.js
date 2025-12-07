@@ -17,6 +17,15 @@ const gatewayMetrics = require("./metrics");
 // OpenTelemetry for trace context propagation
 const { trace, context, propagation } = require("@ecommerce/tracing");
 
+// HTTP module for keep-alive agent
+const http = require("http");
+
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,        // <--- CHÌA KHÓA Ở ĐÂY: Đừng đóng kết nối
+  maxSockets: 100,        // Cho phép mở sẵn 100 đường dây nóng
+  keepAliveMsecs: 5   // Giữ đường dây 10s nếu không ai dùng
+});
+
 // Import middlewares
 const {
   generalLimiter,
@@ -28,7 +37,7 @@ const {
   getClientIp,
 } = require("./middlewares");
 
-const proxy = httpProxy.createProxyServer();
+const proxy = httpProxy.createProxyServer({ agent: keepAliveAgent });
 
 // Track proxy request timing
 const proxyTimers = new Map();

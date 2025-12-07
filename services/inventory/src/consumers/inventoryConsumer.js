@@ -169,6 +169,28 @@ async function handleOrderCreated(message, metadata = {}) {
 			await session.abortTransaction()
 			session.endSession()
 
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// Check if this is a Duplicate Key error on eventId (E11000)
+			// This means another instance already processed this event successfully
+			// We should treat this as SUCCESS (idempotent behavior)
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const isDuplicateKeyError = error.code === 11000 || 
+				(error.message && error.message.includes('E11000 duplicate key error'))
+			
+			if (isDuplicateKeyError && error.message && error.message.includes(':reserved')) {
+				logger.info(
+					{ orderId, eventId, correlationId, error: error.message },
+					`✓ [Inventory] Duplicate eventId detected - event already processed successfully by another instance, treating as SUCCESS (idempotent)`
+				)
+				
+				// Mark as processed to prevent future duplicates
+				if (idempotencyService) {
+					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+				}
+				
+				return // Exit successfully - another instance already handled this
+			}
+
 			// Check if this is a Write Conflict (retryable)
 			const isWriteConflict = error.message && (
 				error.message.includes('Write conflict') ||
@@ -221,11 +243,23 @@ async function handleOrderCreated(message, metadata = {}) {
 					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
 				}
 			} catch (outboxError) {
-				await errorSession.abortTransaction()
-				logger.error(
-					{ error: outboxError.message, orderId },
-					'❌ [Inventory] Failed to create outbox event for error'
-				)
+				// Check if this outbox creation also failed due to duplicate key
+				// This means the error event was already created - safe to ignore
+				const isOutboxDuplicate = outboxError.code === 11000 || 
+					(outboxError.message && outboxError.message.includes('E11000 duplicate key error'))
+				
+				if (isOutboxDuplicate) {
+					logger.warn(
+						{ orderId, error: outboxError.message },
+						'⚠️ [Inventory] Outbox error event already exists (duplicate), ignoring'
+					)
+				} else {
+					await errorSession.abortTransaction()
+					logger.error(
+						{ error: outboxError.message, orderId },
+						'❌ [Inventory] Failed to create outbox event for error'
+					)
+				}
 			} finally {
 				errorSession.endSession()
 			}

@@ -297,6 +297,126 @@ class PaymentRepository {
 			throw error
 		}
 	}
+
+	/**
+	 * Atomic update to PROCESSING status
+	 * Only updates if payment is in PENDING state (race-safe)
+	 */
+	async atomicUpdateToProcessing(orderId, session = null) {
+		try {
+			const options = { new: true, runValidators: true }
+			if (session) {
+				options.session = session
+			}
+			return await Payment.findOneAndUpdate(
+				{
+					orderId,
+					status: 'PENDING', // Only update if still PENDING
+				},
+				{
+					status: 'PROCESSING',
+					$inc: { attempts: 1 },
+				},
+				options
+			)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, orderId },
+				'[PaymentRepository] Error atomic update to PROCESSING'
+			)
+			throw error
+		}
+	}
+
+	/**
+	 * Atomic update to SUCCEEDED status
+	 * Only updates if payment is in non-final state (race-safe)
+	 */
+	async atomicUpdateToSucceeded(
+		orderId,
+		transactionId,
+		gatewayResponse,
+		session = null
+	) {
+		try {
+			const options = { new: true, runValidators: true }
+			if (session) {
+				options.session = session
+			}
+			return await Payment.findOneAndUpdate(
+				{
+					orderId,
+					status: { $in: ['PENDING', 'PROCESSING'] }, // Only if not final
+				},
+				{
+					status: 'SUCCEEDED',
+					transactionId,
+					gatewayResponse,
+					processedAt: new Date(),
+				},
+				options
+			)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, orderId },
+				'[PaymentRepository] Error atomic update to SUCCEEDED'
+			)
+			throw error
+		}
+	}
+
+	/**
+	 * Atomic update to FAILED status
+	 * Only updates if payment is in non-final state (race-safe)
+	 */
+	async atomicUpdateToFailed(
+		orderId,
+		reason,
+		transactionId,
+		errorMessage = null,
+		attempt = 0,
+		session = null
+	) {
+		try {
+			const options = { new: true, runValidators: true }
+			if (session) {
+				options.session = session
+			}
+
+			const updateData = {
+				status: 'FAILED',
+				reason,
+				transactionId,
+				processedAt: new Date(),
+			}
+
+			// Add error to history if provided
+			if (errorMessage) {
+				updateData.$push = {
+					errorHistory: {
+						attempt,
+						error: errorMessage,
+						timestamp: new Date(),
+					},
+				}
+			}
+
+			return await Payment.findOneAndUpdate(
+				{
+					orderId,
+					status: { $in: ['PENDING', 'PROCESSING'] }, // Only if not final
+				},
+				updateData,
+				options
+			)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, orderId },
+				'[PaymentRepository] Error atomic update to FAILED'
+			)
+			throw error
+		}
+	}
 }
 
 module.exports = new PaymentRepository()

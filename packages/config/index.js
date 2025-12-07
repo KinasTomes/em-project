@@ -177,12 +177,18 @@ function loadConfig() {
           inventory: validatedEnv.MONGODB_INVENTORY_URI,
           payment: validatedEnv.MONGODB_PAYMENT_URI,
         };
-        return (
+        const baseUri =
           uriMap[serviceName] ||
           validatedEnv.MONGO_URL ||
           validatedEnv.MONGODB_URI ||
-          `mongodb://localhost/${serviceName}`
-        );
+          `mongodb://localhost/${serviceName}`;
+        
+        // Add pool size configuration for better concurrency
+        // maxPoolSize=100: Allow up to 100 concurrent connections
+        // minPoolSize=10: Maintain at least 10 warm connections
+        // This prevents connection starvation when multiple instances try to access DB
+        const separator = baseUri.includes('?') ? '&' : '?';
+        return `${baseUri}${separator}maxPoolSize=100&minPoolSize=10`;
       },
 
       getPort: (defaultPort) => {
