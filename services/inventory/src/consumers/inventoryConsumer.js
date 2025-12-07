@@ -45,6 +45,18 @@ async function handleOrderCreated(message, metadata = {}) {
 	const RETRY_DELAY_MS = 100
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		// Check idempotency BEFORE each attempt (another instance may have processed during our retry delay)
+		if (idempotencyService && attempt > 1) {
+			const alreadyProcessed = await idempotencyService.isProcessed('ORDER_CREATED', orderId)
+			if (alreadyProcessed) {
+				logger.warn(
+					{ orderId, attempt, eventId, correlationId },
+					`⚠️ [Inventory] ORDER_CREATED already processed by another instance during retry, skipping`
+				)
+				return // Another instance handled it
+			}
+		}
+
 		const session = await mongoose.startSession()
 		session.startTransaction()
 
@@ -86,6 +98,11 @@ async function handleOrderCreated(message, metadata = {}) {
 				await session.commitTransaction()
 				session.endSession()
 
+				// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
+				if (idempotencyService) {
+					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+				}
+
 				logger.info(
 					{
 						orderId,
@@ -125,6 +142,11 @@ async function handleOrderCreated(message, metadata = {}) {
 					})
 
 					await failSession.commitTransaction()
+
+					// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
+					if (idempotencyService) {
+						await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+					}
 
 					logger.warn(
 						{
@@ -193,6 +215,11 @@ async function handleOrderCreated(message, metadata = {}) {
 				})
 
 				await errorSession.commitTransaction()
+
+				// Mark as processed after commit to prevent other instances from processing
+				if (idempotencyService) {
+					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+				}
 			} catch (outboxError) {
 				await errorSession.abortTransaction()
 				logger.error(

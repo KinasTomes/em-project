@@ -57,7 +57,6 @@ const inventoryAuditLogSchema = new mongoose.Schema(
 		},
 		correlationId: {
 			type: String,
-			index: true,
 			description: 'Trace ID for distributed tracing',
 		},
 		metadata: {
