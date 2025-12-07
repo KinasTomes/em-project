@@ -14,6 +14,9 @@ const logger = require("@ecommerce/logger");
 const { metricsMiddleware, metricsHandler } = require("@ecommerce/metrics");
 const gatewayMetrics = require("./metrics");
 
+// OpenTelemetry for trace context propagation
+const { trace, context, propagation } = require("@opentelemetry/api");
+
 // Import middlewares
 const {
   generalLimiter,
@@ -30,13 +33,44 @@ const proxy = httpProxy.createProxyServer();
 // Track proxy request timing
 const proxyTimers = new Map();
 
-// Proxy request start handler - track timing
+// Proxy request start handler - track timing AND inject trace context
 proxy.on('proxyReq', (proxyReq, req, res) => {
   const requestId = req.headers['x-request-id'] || Date.now().toString();
   proxyTimers.set(requestId, {
     startTime: process.hrtime.bigint(),
     target: req.proxyTarget || 'unknown'
   });
+
+  // ============================================
+  // INJECT W3C TRACE CONTEXT INTO PROXY REQUEST
+  // ============================================
+  // This ensures trace context is propagated to downstream services
+  // so they can continue the same trace (same traceId)
+  const activeSpan = trace.getSpan(context.active());
+  if (activeSpan) {
+    const spanContext = activeSpan.spanContext();
+    
+    // Inject W3C Trace Context headers (traceparent, tracestate)
+    // This allows downstream services to extract and continue the trace
+    const carrier = {};
+    propagation.inject(context.active(), carrier);
+    
+    // Set W3C Trace Context headers on proxy request
+    Object.entries(carrier).forEach(([key, value]) => {
+      proxyReq.setHeader(key, value);
+    });
+    
+    // Also set custom headers for easier debugging/correlation
+    proxyReq.setHeader('x-trace-id', spanContext.traceId);
+    proxyReq.setHeader('x-span-id', spanContext.spanId);
+    
+    logger.debug({
+      traceId: spanContext.traceId,
+      spanId: spanContext.spanId,
+      target: req.proxyTarget,
+      traceparent: carrier['traceparent'],
+    }, '🔗 Trace context injected into proxy request');
+  }
 });
 
 // Proxy response handler - record metrics

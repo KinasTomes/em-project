@@ -3,6 +3,9 @@ const { v4: uuidv4 } = require('uuid')
 const logger = require('@ecommerce/logger')
 const { z } = require('zod')
 
+// Helper function for getting traceId as correlationId
+const { getCurrentTraceId } = require('@ecommerce/tracing')
+
 // Schema for seckill.order.won event validation
 const SeckillOrderWonSchema = z
 	.object({
@@ -15,6 +18,7 @@ const SeckillOrderWonSchema = z
 			.object({
 				source: z.literal('seckill'),
 				campaignId: z.string().optional(),
+				correlationId: z.string().optional(), // Correlation ID from seckill service for order tracking
 			})
 			.optional(),
 	})
@@ -57,13 +61,21 @@ async function handleSeckillOrderWon(message, metadata = {}) {
 		throw error
 	}
 
-	const { userId, productId, price, quantity = 1 } = validated
+	const { userId, productId, price, quantity = 1, metadata: eventMetadata } = validated
+
+	// Get traceId from OpenTelemetry context (extracted by Message Broker from seckill event)
+	// This ensures the same traceId is used throughout the entire flow
+	const traceId = getCurrentTraceId()
+
+	// Use traceId as correlationId if available, otherwise fallback to correlationId from metadata
+	// This ensures distributed tracing works correctly across services
+	const finalCorrelationId = traceId || eventMetadata?.correlationId || baseCorrelationId
 
 	const session = await mongoose.startSession()
 	session.startTransaction()
 
 	try {
-		// Create order data with seckill metadata
+		// Create order data with seckill metadata including correlationId
 		const orderData = {
 			products: [
 				{
@@ -81,6 +93,7 @@ async function handleSeckillOrderWon(message, metadata = {}) {
 			metadata: {
 				source: 'seckill',
 				seckillRef: eventId || uuidv4(), // Reference to original seckill event
+				correlationId: finalCorrelationId, // Correlation ID (traceId) for order lookup and tracing
 			},
 		}
 
@@ -89,7 +102,7 @@ async function handleSeckillOrderWon(message, metadata = {}) {
 		const orderId = order._id.toString()
 
 		logger.info(
-			{ orderId, userId, productId, source: 'seckill', correlationId: baseCorrelationId },
+			{ orderId, userId, productId, source: 'seckill', correlationId: finalCorrelationId, traceId },
 			'✓ [Order] Created seckill order with PENDING status'
 		)
 
@@ -114,14 +127,15 @@ async function handleSeckillOrderWon(message, metadata = {}) {
 				timestamp,
 			},
 			session,
-			correlationId: baseCorrelationId,
+			// Use traceId as correlationId to ensure distributed tracing continuity
+			correlationId: finalCorrelationId,
 			routingKey: 'order.created',
 		})
 
 		await session.commitTransaction()
 
 		logger.info(
-			{ orderId, userId, productId, correlationId: baseCorrelationId },
+			{ orderId, userId, productId, correlationId: finalCorrelationId },
 			'✓ [Order] Seckill order created and ORDER_CREATED event queued via Outbox'
 		)
 

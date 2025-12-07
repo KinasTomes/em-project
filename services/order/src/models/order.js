@@ -26,7 +26,8 @@ const orderSchema = new mongoose.Schema(
 		// Metadata for tracking order source and references
 		metadata: {
 			source: { type: String, enum: ['regular', 'seckill'], default: 'regular' },
-			seckillRef: { type: String }, // Reference to seckill order ID
+			seckillRef: { type: String }, // Reference to seckill event ID
+			correlationId: { type: String, index: true }, // Correlation ID from seckill service for order tracking
 		},
 		createdAt: { type: Date, default: Date.now },
 	},

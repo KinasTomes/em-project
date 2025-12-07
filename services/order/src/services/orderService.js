@@ -15,6 +15,9 @@ const {
 	updateCircuitBreakerFromStats
 } = require('../metrics')
 
+// Helper function for getting traceId as correlationId
+const { getCurrentTraceId } = require('@ecommerce/tracing')
+
 class OrderService {
 	constructor(outboxManager) {
 		this.outboxManager = outboxManager
@@ -136,6 +139,10 @@ class OrderService {
 				throw new Error('OutboxManager not initialized')
 			}
 
+			// Get traceId from OpenTelemetry context for correlation
+			// This ensures the same traceId is used throughout the entire order flow
+			const traceId = getCurrentTraceId()
+
 			const timestamp = new Date().toISOString()
 			await this.outboxManager.createEvent({
 				eventType: 'ORDER_CREATED',
@@ -151,7 +158,9 @@ class OrderService {
 					timestamp,
 				},
 				session,
-				correlationId: orderId,
+				// Use traceId as correlationId for distributed tracing
+				// If no active span, OutboxManager will auto-generate correlationId
+				correlationId: traceId,
 				routingKey: 'order.created',
 			})
 
@@ -214,6 +223,25 @@ class OrderService {
 			logger.error(
 				{ error: error.message, username },
 				'Failed to get orders by user'
+			)
+			throw error
+		}
+	}
+
+	/**
+	 * Get order by correlationId (for seckill orders)
+	 * Used by clients to look up order status using the correlationId returned by seckill service
+	 * 
+	 * @param {string} correlationId - Correlation ID from seckill service
+	 * @returns {Promise<Object|null>} Order document or null
+	 */
+	async getOrderByCorrelationId(correlationId) {
+		try {
+			return await orderRepository.findByCorrelationId(correlationId)
+		} catch (error) {
+			logger.error(
+				{ error: error.message, correlationId },
+				'Failed to get order by correlationId'
 			)
 			throw error
 		}

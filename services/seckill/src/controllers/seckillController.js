@@ -113,12 +113,12 @@ class SeckillController {
         })
       }
 
-      // Success - return 202 Accepted with pending orderId
-      logger.info({ userId, productId, orderId: result.orderId }, 'Seckill purchase successful')
+      // Success - return 202 Accepted with correlationId for tracking
+      logger.info({ userId, productId, correlationId: result.correlationId }, 'Seckill purchase successful')
       return res.status(202).json({
         success: true,
-        orderId: result.orderId,
-        message: 'Purchase accepted. Order is being processed.',
+        correlationId: result.correlationId,
+        message: 'Purchase accepted. Order is being processed. Use correlationId to track order status.',
       })
     } catch (error) {
       logger.error({ error: error.message, stack: error.stack }, 'Seckill buy handler error')

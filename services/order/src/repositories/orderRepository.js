@@ -214,6 +214,23 @@ class OrderRepository {
 	}
 
 	/**
+	 * Find order by correlationId (for seckill orders)
+	 * @param {string} correlationId - Correlation ID from seckill service
+	 * @returns {Promise<Object|null>} Order document or null
+	 */
+	async findByCorrelationId(correlationId) {
+		try {
+			return await Order.findOne({ 'metadata.correlationId': correlationId })
+		} catch (error) {
+			logger.error(
+				{ error: error.message, correlationId },
+				'[OrderRepository] Error finding order by correlationId'
+			)
+			throw error
+		}
+	}
+
+	/**
 	 * Get order statistics
 	 */
 	async getStatistics(startDate, endDate) {

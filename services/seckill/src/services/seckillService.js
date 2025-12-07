@@ -6,7 +6,9 @@ const redisClient = require('../config/redis')
 const config = require('../config')
 const { CampaignInitSchema } = require('../schemas/seckillEvents.schema')
 const metrics = require('../metrics')
-const tracing = require('../tracing')
+
+// Use shared tracing helper instead of local tracing.js
+const { getCurrentTraceId } = require('@ecommerce/tracing')
 
 // Emergency log file for Ghost Order fallback
 const EMERGENCY_LOG_PATH = path.join(__dirname, '../../logs/emergency-events.log')
@@ -136,11 +138,10 @@ class SeckillService {
     // Record successful reserve latency
     endTimer({ status: 'success' })
 
-    // Success - generate orderId and publish event
-    const orderId = uuidv4()
+    // Success - generate correlationId for tracking (Order Service will create orderId)
     const eventId = uuidv4()
     // Use trace ID as correlationId for distributed tracing, fallback to UUID
-    const correlationId = tracing.getCurrentTraceId() || uuidv4()
+    const correlationId = getCurrentTraceId() || uuidv4()
 
     // Get price for the event
     const price = await redisClient.get(`seckill:${productId}:price`)
@@ -153,6 +154,7 @@ class SeckillService {
       timestamp: Date.now(),
       metadata: {
         source: 'seckill',
+        correlationId, // Pass correlationId in event for Order Service to store
       },
     }
 
@@ -163,12 +165,12 @@ class SeckillService {
           eventId,
           correlationId,
         })
-        logger.info({ orderId, userId, productId, eventId }, 'seckill.order.won event published')
+        logger.info({ correlationId, userId, productId, eventId }, 'seckill.order.won event published')
       }
     } catch (error) {
       // Ghost Order fallback: log to emergency file for manual replay
-      logger.error({ error: error.message, orderId, userId, productId }, 'Failed to publish seckill.order.won event')
-      this._logEmergencyEvent({ orderId, eventId, correlationId, eventData, error: error.message })
+      logger.error({ error: error.message, correlationId, userId, productId }, 'Failed to publish seckill.order.won event')
+      this._logEmergencyEvent({ eventId, correlationId, eventData, error: error.message })
       // Record publish failure metric
       metrics.recordPublishFailure('seckill.order.won')
     }
@@ -181,7 +183,7 @@ class SeckillService {
 
     return {
       success: true,
-      orderId,
+      correlationId,
       userId,
       productId,
     }
@@ -287,7 +289,7 @@ class SeckillService {
     // Success - publish seckill.released event
     const eventId = uuidv4()
     // Use trace ID as correlationId for distributed tracing, fallback to UUID
-    const correlationId = tracing.getCurrentTraceId() || uuidv4()
+    const correlationId = getCurrentTraceId() || uuidv4()
 
     const eventData = {
       orderId: orderId || 'unknown',

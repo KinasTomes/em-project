@@ -102,6 +102,7 @@ class OrderController {
 	/**
 	 * GET /api/orders
 	 * Return list of orders for current user with pagination
+	 * Supports query param: correlationId for looking up seckill orders
 	 */
 	async getMyOrders(req, res) {
 		try {
@@ -109,6 +110,12 @@ class OrderController {
 			const userId = req.headers['x-user-id']
 			if (!userId) {
 				return res.status(401).json({ message: 'Unauthorized' })
+			}
+
+			// Check if looking up by correlationId (for seckill orders)
+			const { correlationId } = req.query
+			if (correlationId) {
+				return this.getOrderByCorrelationId(req, res, correlationId, userId)
 			}
 
 			const username = userId
@@ -137,6 +144,48 @@ class OrderController {
 		} catch (error) {
 			logger.error({ error: error.message }, 'Failed to fetch orders')
 			recordOrderOperation('list', 'failed')
+			return res.status(500).json({ message: 'Server error' })
+		}
+	}
+
+	/**
+	 * GET /api/orders?correlationId=xxx
+	 * Look up order by correlationId (for seckill orders)
+	 * Returns the order associated with the given correlationId
+	 */
+	async getOrderByCorrelationId(req, res, correlationId, userId) {
+		try {
+			const order = await this.orderService.getOrderByCorrelationId(correlationId)
+
+			if (!order) {
+				// Order might not be created yet (async processing)
+				recordOrderOperation('read_by_correlation', 'not_found')
+				return res.status(404).json({
+					message: 'Order not found. It may still be processing.',
+					correlationId,
+				})
+			}
+
+			// Verify the order belongs to the requesting user
+			if (order.user !== userId) {
+				recordOrderOperation('read_by_correlation', 'forbidden')
+				return res.status(403).json({ message: 'Forbidden' })
+			}
+
+			recordOrderOperation('read_by_correlation', 'success')
+			return res.status(200).json({
+				orderId: order._id,
+				correlationId: order.metadata?.correlationId,
+				products: order.products,
+				totalPrice: order.totalPrice,
+				user: order.user,
+				status: order.status,
+				cancellationReason: order.cancellationReason,
+				createdAt: order.createdAt,
+			})
+		} catch (error) {
+			logger.error({ error: error.message, correlationId }, 'Failed to fetch order by correlationId')
+			recordOrderOperation('read_by_correlation', 'failed')
 			return res.status(500).json({ message: 'Server error' })
 		}
 	}
