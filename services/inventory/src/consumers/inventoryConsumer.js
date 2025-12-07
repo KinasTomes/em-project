@@ -165,8 +165,24 @@ async function handleOrderCreated(message, metadata = {}) {
 						`✗ [Inventory] RESERVED_FAILED - ${isSeckill ? 'DB sync failed (Redis/DB mismatch)' : 'insufficient stock'}, queued via Outbox`
 					)
 				} catch (failError) {
-					await failSession.abortTransaction()
-					throw failError
+					// Check if FAILED event already exists (duplicate key)
+					// This can happen if another instance already processed and failed
+					const isDuplicateFailed = failError.code === 11000 || 
+						(failError.message && failError.message.includes('E11000 duplicate key error'))
+					
+					if (isDuplicateFailed) {
+						logger.info(
+							{ orderId, correlationId, error: failError.message },
+							'✓ [Inventory] FAILED event already exists, treating as processed (idempotent)'
+						)
+						// Mark as processed even though we didn't create the event
+						if (idempotencyService) {
+							await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+						}
+					} else {
+						await failSession.abortTransaction()
+						throw failError
+					}
 				} finally {
 					failSession.endSession()
 				}
@@ -177,17 +193,19 @@ async function handleOrderCreated(message, metadata = {}) {
 			session.endSession()
 
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			// Check if this is a Duplicate Key error on eventId (E11000)
-			// This means another instance already processed this event successfully
-			// We should treat this as SUCCESS (idempotent behavior)
+			// CRITICAL: Check if this is a Duplicate Key error on SUCCESS eventId (E11000)
+			// This means another instance ALREADY successfully reserved and created SUCCESS event
+			// We MUST treat this as complete SUCCESS and EXIT immediately
+			// DO NOT create FAILED event - the reservation already succeeded!
 			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			const isDuplicateKeyError = error.code === 11000 || 
 				(error.message && error.message.includes('E11000 duplicate key error'))
 			
-			if (isDuplicateKeyError && error.message && error.message.includes(':reserved')) {
+			// Check if duplicate is for SUCCESS event (inventory-reserved:{orderId})
+			if (isDuplicateKeyError && error.message && error.message.includes('inventory-reserved:')) {
 				logger.info(
-					{ orderId, eventId, correlationId, error: error.message },
-					`✓ [Inventory] Duplicate eventId detected - event already processed successfully by another instance, treating as SUCCESS (idempotent)`
+					{ orderId, eventId, correlationId, attempt, error: error.message },
+					`✓ [Inventory] Duplicate SUCCESS eventId - another instance already reserved successfully. Treating as SUCCESS and exiting (idempotent)`
 				)
 				
 				// Mark as processed to prevent future duplicates
@@ -195,7 +213,9 @@ async function handleOrderCreated(message, metadata = {}) {
 					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
 				}
 				
-				return // Exit successfully - another instance already handled this
+				// IMPORTANT: Return immediately - do NOT create FAILED event!
+				// The reservation already succeeded in another instance
+				return
 			}
 
 			// Check if this is a Write Conflict (retryable)
@@ -218,7 +238,7 @@ async function handleOrderCreated(message, metadata = {}) {
 			// Non-retryable error or max retries exceeded
 			logger.error(
 				{ error: error.message, orderId, isSeckill, attempt },
-				'❌ [Inventory] Error processing RESERVE request'
+				'❌ [Inventory] Error processing RESERVE request, creating FAILED event'
 			)
 
 			// Create failure event in separate transaction
@@ -238,7 +258,8 @@ async function handleOrderCreated(message, metadata = {}) {
 						},
 					},
 					session: errorSession,
-					eventId: `${baseEventId}:reserve_error`,
+					// Use deterministic eventId (not baseEventId from message)
+					eventId: `inventory-reserve-failed:${orderId}`,
 					correlationId: correlatedId,
 					routingKey: 'inventory.reserved.failed',
 				})
