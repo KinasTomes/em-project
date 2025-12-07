@@ -83,43 +83,103 @@ async function handleOrderCreated(message, metadata = {}) {
 			}
 
 			if (result.success) {
-				await outboxManager.createEvent({
-					eventType: 'INVENTORY_RESERVED_SUCCESS',
-					payload: {
-						type: 'INVENTORY_RESERVED_SUCCESS',
-						data: {
-							orderId,
-							products,
-							timestamp: new Date().toISOString(),
-						},
-					},
-					session,
-					// Use deterministic eventId based on orderId (not baseEventId from message)
-					// This ensures duplicate messages create the same eventId -> caught by unique constraint
-					eventId: `inventory-reserved:${orderId}`,
-					correlationId: correlatedId,
-					routingKey: 'inventory.reserved.success',
-				})
-
-				await session.commitTransaction()
-				session.endSession()
-
-				// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
+				// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+				// CRITICAL: Before creating SUCCESS event, verify reserve actually succeeded
+				// Check if another instance already processed this (idempotency double-check)
+				// This prevents SUCCESS event creation when reserve will fail on commit
+				// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 				if (idempotencyService) {
-					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+					const alreadyProcessed = await idempotencyService.isProcessed('ORDER_CREATED', orderId)
+					if (alreadyProcessed) {
+						await session.abortTransaction()
+						session.endSession()
+						logger.info(
+							{ orderId, attempt, correlationId },
+							'✓ [Inventory] Another instance completed processing during our reserve operation, aborting'
+						)
+						return
+					}
 				}
 
-				logger.info(
-					{
-						orderId,
-						productsCount: products.length,
+				try {
+					await outboxManager.createEvent({
+						eventType: 'INVENTORY_RESERVED_SUCCESS',
+						payload: {
+							type: 'INVENTORY_RESERVED_SUCCESS',
+							data: {
+								orderId,
+								products,
+								timestamp: new Date().toISOString(),
+							},
+						},
+						session,
+						// Use deterministic eventId based on orderId (not baseEventId from message)
+						// This ensures duplicate messages create the same eventId -> caught by unique constraint
+						eventId: `inventory-reserved:${orderId}`,
+						correlationId: correlatedId,
 						routingKey: 'inventory.reserved.success',
-						isSeckill,
-						attempt,
-					},
-					`✓ [Inventory] RESERVED_SUCCESS - queued via Outbox (${isSeckill ? 'Seckill' : 'Regular'})`
-				)
-				return // Success - exit retry loop
+					})
+
+					await session.commitTransaction()
+					session.endSession()
+
+					// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
+					if (idempotencyService) {
+						await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+					}
+
+					logger.info(
+						{
+							orderId,
+							productsCount: products.length,
+							routingKey: 'inventory.reserved.success',
+							isSeckill,
+							attempt,
+						},
+						`✓ [Inventory] RESERVED_SUCCESS - queued via Outbox (${isSeckill ? 'Seckill' : 'Regular'})`
+					)
+					return // Success - exit retry loop
+				} catch (commitError) {
+					// Handle errors during outbox creation or commit
+					await session.abortTransaction()
+					session.endSession()
+
+					// Check if this is duplicate key on SUCCESS eventId
+					const isDuplicateSuccess = commitError.code === 11000 || 
+						(commitError.message && commitError.message.includes('E11000 duplicate key error') && 
+						 commitError.message.includes('inventory-reserved:'))
+					
+					if (isDuplicateSuccess) {
+						logger.info(
+							{ orderId, attempt, error: commitError.message },
+							'✓ [Inventory] SUCCESS event already exists (duplicate), marking as processed'
+						)
+						if (idempotencyService) {
+							await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+						}
+						return // Exit successfully
+					}
+
+					// Check if this is a Write Conflict during commit
+					const isWriteConflict = commitError.message && (
+						commitError.message.includes('Write conflict') ||
+						commitError.message.includes('WriteConflict') ||
+						commitError.code === 112
+					)
+
+					if (isWriteConflict && attempt < MAX_RETRIES) {
+						logger.warn(
+							{ orderId, attempt, error: commitError.message },
+							'⚠️ [Inventory] Write conflict during SUCCESS commit, will retry entire operation'
+						)
+						// Don't create FAILED event - just retry from the beginning
+						await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)))
+						continue // Retry the entire reserve operation
+					}
+
+					// Other errors - re-throw to be handled by outer catch
+					throw commitError
+				}
 			} else {
 				// Rollback any partial changes
 				await session.abortTransaction()
