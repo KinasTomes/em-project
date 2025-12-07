@@ -143,7 +143,7 @@ async function handleSeckillOrderWon(message, metadata = {}) {
 	} catch (error) {
 		await session.abortTransaction()
 		logger.error(
-			{ error: error.message, userId, productId, correlationId: baseCorrelationId },
+			{ error: error.message, userId, productId, correlationId: finalCorrelationId },
 			'❌ [Order] Failed to create seckill order, transaction rolled back'
 		)
 		throw error

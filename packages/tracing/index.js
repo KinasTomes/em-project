@@ -4,6 +4,7 @@ const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http')
 const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
 const { resourceFromAttributes } = require('@opentelemetry/resources');
 const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+const { trace, context } = require('@opentelemetry/api');
 
 let sdk; // Giữ tham chiếu đến SDK
 
@@ -57,4 +58,45 @@ const initTracing = (serviceName, jaegerEndpoint = 'http://localhost:4318/v1/tra
   });
 };
 
-module.exports = { initTracing };
+/**
+ * Get the current trace ID from active OpenTelemetry context
+ * Useful for distributed tracing correlation across services
+ * 
+ * @returns {string|null} Trace ID or null if not in a trace context
+ * 
+ * @example
+ * const { getCurrentTraceId } = require('@ecommerce/tracing');
+ * const traceId = getCurrentTraceId();
+ * // Use traceId as correlationId for events
+ */
+const getCurrentTraceId = () => {
+  const activeSpan = trace.getSpan(context.active());
+  return activeSpan?.spanContext()?.traceId || null;
+};
+
+/**
+ * Get the current span ID from active OpenTelemetry context
+ * 
+ * @returns {string|null} Span ID or null if not in a trace context
+ */
+const getCurrentSpanId = () => {
+  const activeSpan = trace.getSpan(context.active());
+  return activeSpan?.spanContext()?.spanId || null;
+};
+
+/**
+ * Get the current span context (traceId, spanId, traceFlags)
+ * 
+ * @returns {Object|null} Span context object or null if not in a trace context
+ */
+const getCurrentSpanContext = () => {
+  const activeSpan = trace.getSpan(context.active());
+  return activeSpan?.spanContext() || null;
+};
+
+module.exports = { 
+  initTracing,
+  getCurrentTraceId,
+  getCurrentSpanId,
+  getCurrentSpanContext,
+};
