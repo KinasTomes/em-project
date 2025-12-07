@@ -17,6 +17,15 @@ const gatewayMetrics = require("./metrics");
 // OpenTelemetry for trace context propagation
 const { trace, context, propagation } = require("@ecommerce/tracing");
 
+// HTTP module for keep-alive agent
+const http = require("http");
+
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,        // <--- CHÌA KHÓA Ở ĐÂY: Đừng đóng kết nối
+  maxSockets: 100,        // Cho phép mở sẵn 100 đường dây nóng
+  keepAliveMsecs: 5   // Giữ đường dây 10s nếu không ai dùng
+});
+
 // Import middlewares
 const {
   generalLimiter,
@@ -28,7 +37,7 @@ const {
   getClientIp,
 } = require("./middlewares");
 
-const proxy = httpProxy.createProxyServer();
+const proxy = httpProxy.createProxyServer({ agent: keepAliveAgent });
 
 // Track proxy request timing
 const proxyTimers = new Map();
@@ -56,20 +65,32 @@ proxy.on('proxyReq', (proxyReq, req, res) => {
     propagation.inject(context.active(), carrier);
     
     // Set W3C Trace Context headers on proxy request
-    Object.entries(carrier).forEach(([key, value]) => {
-      proxyReq.setHeader(key, value);
-    });
-    
-    // Also set custom headers for easier debugging/correlation
-    proxyReq.setHeader('x-trace-id', spanContext.traceId);
-    proxyReq.setHeader('x-span-id', spanContext.spanId);
-    
-    logger.debug({
-      traceId: spanContext.traceId,
-      spanId: spanContext.spanId,
-      target: req.proxyTarget,
-      traceparent: carrier['traceparent'],
-    }, '🔗 Trace context injected into proxy request');
+    // Check if headers already sent to avoid ERR_HTTP_HEADERS_SENT
+    if (!res.headersSent) {
+      Object.entries(carrier).forEach(([key, value]) => {
+        try {
+          proxyReq.setHeader(key, value);
+        } catch (error) {
+          // Ignore if headers already sent
+          logger.debug({ error: error.message, key }, 'Failed to set proxy header (already sent)');
+        }
+      });
+      
+      // Also set custom headers for easier debugging/correlation
+      try {
+        proxyReq.setHeader('x-trace-id', spanContext.traceId);
+        proxyReq.setHeader('x-span-id', spanContext.spanId);
+      } catch (error) {
+        logger.debug({ error: error.message }, 'Failed to set custom trace headers');
+      }
+      
+      logger.debug({
+        traceId: spanContext.traceId,
+        spanId: spanContext.spanId,
+        target: req.proxyTarget,
+        traceparent: carrier['traceparent'],
+      }, '🔗 Trace context injected into proxy request');
+    }
   }
 });
 

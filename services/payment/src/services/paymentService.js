@@ -56,19 +56,26 @@ class PaymentService {
 
 	/**
 	 * Update payment status to PROCESSING
+	 * Uses atomic update to prevent race conditions
 	 * 
 	 * @param {string} orderId
 	 * @returns {Promise<Payment>}
 	 */
 	async markAsProcessing(orderId) {
-		const payment = await paymentRepository.findByOrderId(orderId)
+		const payment = await paymentRepository.atomicUpdateToProcessing(orderId)
+		
 		if (!payment) {
-			throw new Error(`Payment not found for orderId: ${orderId}`)
+			// Payment not found OR already processed by another instance
+			const existing = await paymentRepository.findByOrderId(orderId)
+			if (!existing) {
+				throw new Error(`Payment not found for orderId: ${orderId}`)
+			}
+			logger.info(
+				{ orderId, status: existing.status },
+				'[PaymentService] Payment already being processed by another instance (race condition avoided)'
+			)
+			return existing
 		}
-
-		payment.status = 'PROCESSING'
-		payment.attempts += 1
-		await paymentRepository.save(payment)
 
 		logger.info(
 			{ orderId, attempts: payment.attempts },
@@ -80,6 +87,9 @@ class PaymentService {
 
 	/**
 	 * Update payment status to SUCCEEDED and publish event via Outbox
+	 * Uses atomic update to prevent race conditions between multiple instances
+	 * 
+	 * Idempotent: If payment is already SUCCEEDED, skip creating duplicate event
 	 * 
 	 * @param {string} orderId
 	 * @param {object} result
@@ -93,18 +103,30 @@ class PaymentService {
 		session.startTransaction()
 
 		try {
-			const payment = await paymentRepository.findByOrderId(orderId, session)
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// ATOMIC UPDATE: Only update if status is PENDING or PROCESSING
+			// This prevents race conditions when multiple instances process same order
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const payment = await paymentRepository.atomicUpdateToSucceeded(
+				orderId,
+				result.transactionId,
+				result.gatewayResponse || {},
+				session
+			)
+
 			if (!payment) {
-				throw new Error(`Payment not found for orderId: ${orderId}`)
+				// Payment already in final state (processed by another instance)
+				await session.abortTransaction()
+				const existing = await paymentRepository.findByOrderId(orderId)
+				logger.info(
+					{ orderId, status: existing?.status },
+					'[PaymentService] Payment already in final state, skipping (race condition avoided)'
+				)
+				return existing
 			}
 
-			payment.status = 'SUCCEEDED'
-			payment.transactionId = result.transactionId
-			payment.gatewayResponse = result.gatewayResponse || {}
-			payment.processedAt = new Date()
-			await paymentRepository.save(payment, session)
-
 			// Publish PAYMENT_SUCCEEDED via Outbox (transactional)
+			// Use orderId as part of eventId to ensure idempotency at outbox level
 			await this.outboxManager.createEvent({
 				eventType: 'PAYMENT_SUCCEEDED',
 				payload: {
@@ -118,6 +140,7 @@ class PaymentService {
 					},
 				},
 				session,
+				eventId: `payment-succeeded:${orderId}`, // Deterministic eventId for idempotency
 				correlationId,
 				routingKey: 'payment.succeeded',
 			})
@@ -136,6 +159,24 @@ class PaymentService {
 			return payment
 		} catch (error) {
 			await session.abortTransaction()
+			
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// Handle duplicate key error on outbox eventId
+			// This means another instance already created the event - treat as success
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const isDuplicateKeyError = error.code === 11000 || 
+				(error.message && error.message.includes('E11000 duplicate key error'))
+			
+			if (isDuplicateKeyError) {
+				logger.info(
+					{ orderId, error: error.message },
+					'[PaymentService] Duplicate eventId detected - event already created by another instance (idempotent)'
+				)
+				// Return the existing payment
+				const existingPayment = await paymentRepository.findByOrderId(orderId)
+				return existingPayment
+			}
+			
 			logger.error(
 				{ error: error.message, orderId },
 				'[PaymentService] Failed to mark payment as succeeded'
@@ -148,6 +189,9 @@ class PaymentService {
 
 	/**
 	 * Update payment status to FAILED and publish event via Outbox
+	 * Uses atomic update to prevent race conditions between multiple instances
+	 * 
+	 * Idempotent: If payment is already in final state (SUCCEEDED/FAILED), skip
 	 * 
 	 * @param {string} orderId
 	 * @param {object} result
@@ -162,23 +206,32 @@ class PaymentService {
 		session.startTransaction()
 
 		try {
-			const payment = await paymentRepository.findByOrderId(orderId, session)
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// ATOMIC UPDATE: Only update if status is PENDING or PROCESSING
+			// This prevents race conditions when multiple instances process same order
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const payment = await paymentRepository.atomicUpdateToFailed(
+				orderId,
+				result.reason || error?.message || 'Payment failed',
+				result.transactionId,
+				error ? error.message : null,
+				0, // attempt number - could be retrieved from payment if needed
+				session
+			)
+
 			if (!payment) {
-				throw new Error(`Payment not found for orderId: ${orderId}`)
+				// Payment already in final state (processed by another instance)
+				await session.abortTransaction()
+				const existing = await paymentRepository.findByOrderId(orderId)
+				logger.info(
+					{ orderId, status: existing?.status },
+					'[PaymentService] Payment already in final state, skipping (race condition avoided)'
+				)
+				return existing
 			}
-
-			payment.status = 'FAILED'
-			payment.reason = result.reason || error?.message || 'Payment failed'
-			payment.transactionId = result.transactionId
-			payment.processedAt = new Date()
-
-			if (error) {
-				payment.addError(error)
-			}
-
-			await paymentRepository.save(payment, session)
 
 			// Publish PAYMENT_FAILED via Outbox (transactional)
+			// Use orderId as part of eventId to ensure idempotency at outbox level
 			await this.outboxManager.createEvent({
 				eventType: 'PAYMENT_FAILED',
 				payload: {
@@ -194,6 +247,7 @@ class PaymentService {
 					},
 				},
 				session,
+				eventId: `payment-failed:${orderId}`, // Deterministic eventId for idempotency
 				correlationId,
 				routingKey: 'payment.failed',
 			})
@@ -212,6 +266,20 @@ class PaymentService {
 			return payment
 		} catch (err) {
 			await session.abortTransaction()
+			
+			// Handle duplicate key error on outbox eventId
+			const isDuplicateKeyError = err.code === 11000 || 
+				(err.message && err.message.includes('E11000 duplicate key error'))
+			
+			if (isDuplicateKeyError) {
+				logger.info(
+					{ orderId, error: err.message },
+					'[PaymentService] Duplicate eventId detected - event already created (idempotent)'
+				)
+				const existingPayment = await paymentRepository.findByOrderId(orderId)
+				return existingPayment
+			}
+			
 			logger.error(
 				{ error: err.message, orderId },
 				'[PaymentService] Failed to mark payment as failed'

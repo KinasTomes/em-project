@@ -45,13 +45,17 @@ async function handleOrderCreated(message, metadata = {}) {
 	const RETRY_DELAY_MS = 100
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-		// Check idempotency BEFORE each attempt (another instance may have processed during our retry delay)
-		if (idempotencyService && attempt > 1) {
+		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+		// CRITICAL: Check idempotency BEFORE EVERY attempt (including first)
+		// With prefetch=50, multiple instances can receive same message
+		// Must check BEFORE processing to prevent duplicate RESERVED_SUCCESS/FAILED events
+		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+		if (idempotencyService) {
 			const alreadyProcessed = await idempotencyService.isProcessed('ORDER_CREATED', orderId)
 			if (alreadyProcessed) {
 				logger.warn(
 					{ orderId, attempt, eventId, correlationId },
-					`⚠️ [Inventory] ORDER_CREATED already processed by another instance during retry, skipping`
+					`⚠️ [Inventory] ORDER_CREATED already processed by another instance, skipping (idempotency)`
 				)
 				return // Another instance handled it
 			}
@@ -90,7 +94,9 @@ async function handleOrderCreated(message, metadata = {}) {
 						},
 					},
 					session,
-					eventId: `${baseEventId}:reserved`,
+					// Use deterministic eventId based on orderId (not baseEventId from message)
+					// This ensures duplicate messages create the same eventId -> caught by unique constraint
+					eventId: `inventory-reserved:${orderId}`,
 					correlationId: correlatedId,
 					routingKey: 'inventory.reserved.success',
 				})
@@ -136,7 +142,8 @@ async function handleOrderCreated(message, metadata = {}) {
 							},
 						},
 						session: failSession,
-						eventId: `${baseEventId}:reserve_failed`,
+						// Use deterministic eventId based on orderId
+						eventId: `inventory-reserve-failed:${orderId}`,
 						correlationId: correlatedId,
 						routingKey: 'inventory.reserved.failed',
 					})
@@ -168,6 +175,28 @@ async function handleOrderCreated(message, metadata = {}) {
 		} catch (error) {
 			await session.abortTransaction()
 			session.endSession()
+
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// Check if this is a Duplicate Key error on eventId (E11000)
+			// This means another instance already processed this event successfully
+			// We should treat this as SUCCESS (idempotent behavior)
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			const isDuplicateKeyError = error.code === 11000 || 
+				(error.message && error.message.includes('E11000 duplicate key error'))
+			
+			if (isDuplicateKeyError && error.message && error.message.includes(':reserved')) {
+				logger.info(
+					{ orderId, eventId, correlationId, error: error.message },
+					`✓ [Inventory] Duplicate eventId detected - event already processed successfully by another instance, treating as SUCCESS (idempotent)`
+				)
+				
+				// Mark as processed to prevent future duplicates
+				if (idempotencyService) {
+					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
+				}
+				
+				return // Exit successfully - another instance already handled this
+			}
 
 			// Check if this is a Write Conflict (retryable)
 			const isWriteConflict = error.message && (
@@ -221,11 +250,23 @@ async function handleOrderCreated(message, metadata = {}) {
 					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
 				}
 			} catch (outboxError) {
-				await errorSession.abortTransaction()
-				logger.error(
-					{ error: outboxError.message, orderId },
-					'❌ [Inventory] Failed to create outbox event for error'
-				)
+				// Check if this outbox creation also failed due to duplicate key
+				// This means the error event was already created - safe to ignore
+				const isOutboxDuplicate = outboxError.code === 11000 || 
+					(outboxError.message && outboxError.message.includes('E11000 duplicate key error'))
+				
+				if (isOutboxDuplicate) {
+					logger.warn(
+						{ orderId, error: outboxError.message },
+						'⚠️ [Inventory] Outbox error event already exists (duplicate), ignoring'
+					)
+				} else {
+					await errorSession.abortTransaction()
+					logger.error(
+						{ error: outboxError.message, orderId },
+						'❌ [Inventory] Failed to create outbox event for error'
+					)
+				}
 			} finally {
 				errorSession.endSession()
 			}
