@@ -72,8 +72,14 @@ class OrderStateMachine {
 
 	/**
 	 * Transition to CONFIRMED (when all inventory reserved)
+	 * Idempotent: returns success if already CONFIRMED
 	 */
 	confirm() {
+		// Already in target state - idempotent success
+		if (this.fsm.state === 'CONFIRMED') {
+			logger.debug('[OrderStateMachine] Order already CONFIRMED, skipping transition')
+			return this.fsm.state
+		}
 		if (!this.can('confirm')) {
 			throw new Error(
 				`Cannot confirm order from state: ${this.fsm.state}`
@@ -87,8 +93,14 @@ class OrderStateMachine {
 	 * Transition to PAID (when payment succeeded)
 	 * Can ONLY transition from CONFIRMED state
 	 * Order must be confirmed (inventory reserved) before payment
+	 * Idempotent: returns success if already PAID
 	 */
 	pay() {
+		// Already in target state - idempotent success
+		if (this.fsm.state === 'PAID') {
+			logger.debug('[OrderStateMachine] Order already PAID, skipping transition')
+			return this.fsm.state
+		}
 		if (!this.can('pay')) {
 			throw new Error(
 				`Cannot pay order from state: ${this.fsm.state}. Order must be CONFIRMED before payment.`
@@ -101,8 +113,14 @@ class OrderStateMachine {
 	/**
 	 * Transition to CANCELLED
 	 * Can transition from PENDING (inventory reserve failed) or CONFIRMED (payment failed)
+	 * Idempotent: returns success if already CANCELLED
 	 */
 	cancel() {
+		// Already in target state - idempotent success
+		if (this.fsm.state === 'CANCELLED') {
+			logger.debug('[OrderStateMachine] Order already CANCELLED, skipping transition')
+			return this.fsm.state
+		}
 		if (!this.can('cancel')) {
 			throw new Error(
 				`Cannot cancel order from state: ${this.fsm.state}. Allowed from: PENDING, CONFIRMED`

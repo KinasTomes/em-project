@@ -229,35 +229,36 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVED'
 		)
 
-		const order = await orderRepository.findById(payload.orderId)
-		if (!order) {
-			logger.warn(
-				{ orderId: payload.orderId, correlationId },
-				'[Order] Order not found for INVENTORY_RESERVED'
-			)
-			endTimer()
-			recordEventProcessing('inventory_reserved', 'skipped')
-			return
-		}
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				// Read order INSIDE transaction with session for proper locking
+				const order = await orderRepository.findById(payload.orderId, session)
+				if (!order) {
+					logger.warn(
+						{ orderId: payload.orderId, correlationId },
+						'[Order] Order not found for INVENTORY_RESERVED'
+					)
+					endTimer()
+					recordEventProcessing('inventory_reserved', 'skipped')
+					return
+				}
 
-		// Check if order is already in final state
-		const fsm = createOrderStateMachine(order.status)
-		if (fsm.isFinalState()) {
-			logger.warn(
-				{
-					orderId: payload.orderId,
-					productId: payload.productId,
-					currentStatus: order.status,
-					correlationId,
-				},
-				'[Order] Order already in final state, need to release this reserved inventory'
-			)
+				// Check if order is already in final state
+				const fsm = createOrderStateMachine(order.status)
+				if (fsm.isFinalState()) {
+					logger.warn(
+						{
+							orderId: payload.orderId,
+							productId: payload.productId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Order already in final state, need to release this reserved inventory'
+					)
 
-			// If order is already CANCELLED, release this inventory immediately
-			if (order.status === 'CANCELLED') {
-				const session = await mongoose.startSession()
-				try {
-					await session.withTransaction(async () => {
+					// If order is already CANCELLED, release this inventory immediately
+					if (order.status === 'CANCELLED') {
 						await this.outboxManager.createEvent({
 							eventType: 'INVENTORY_RELEASE_REQUEST',
 							payload: {
@@ -285,83 +286,85 @@ class OrderService {
 							'[Order] Released inventory for cancelled order (race condition compensation)'
 						)
 						recordSagaOperation('order_flow', 'reserve', 'compensated')
-					})
-				} finally {
-					session.endSession()
+					}
+
+					endTimer()
+					recordEventProcessing('inventory_reserved', 'skipped')
+					return
 				}
-			}
 
-			endTimer()
-			recordEventProcessing('inventory_reserved', 'skipped')
-			return
-		}
-
-		const session = await mongoose.startSession()
-		try {
-			await session.withTransaction(async () => {
 				// Mark all products as reserved
 				order.products.forEach((product) => {
 					product.reserved = true
 				})
 
 				// Use state machine to validate transition: PENDING → CONFIRMED
-				try {
-					fsm.confirm()
-					order.status = fsm.getState()
+				const oldStatus = order.status
+				fsm.confirm()
+				order.status = fsm.getState()
 
+				// If status didn't change (idempotent), skip the rest
+				if (oldStatus === order.status) {
 					logger.info(
-						{
-							orderId: order._id,
-							oldStatus: 'PENDING',
-							newStatus: order.status,
-							correlationId,
-						},
-						'[Order] Order status updated to CONFIRMED (all inventory reserved)'
-					)
-
-					// Record state transition metrics
-					recordStateTransition('PENDING', 'CONFIRMED', 'inventory_reserved')
-					recordSagaOperation('order_flow', 'reserve', 'success')
-					recordOrderValue(order.totalPrice, 'USD', 'confirmed')
-
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_CONFIRMED',
-						payload: {
-							orderId: order._id,
-							totalPrice: order.totalPrice,
-							currency: 'USD',
-							products: order.products.map((p) => ({
-								productId: p._id.toString(),
-								quantity: p.quantity,
-								price: p.price,
-							})),
-							userId: order.user,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-						routingKey: 'order.confirmed',
-					})
-				} catch (error) {
-					logger.error(
-						{
-							error: error.message,
-							orderId: payload.orderId,
-							currentStatus: order.status,
-							correlationId,
-						},
-						'[Order] Invalid state transition for INVENTORY_RESERVED'
+						{ orderId: order._id, status: order.status, correlationId },
+						'[Order] Order already in target state, skipping (idempotent)'
 					)
 					endTimer()
-					recordEventProcessing('inventory_reserved', 'failed')
-					throw error
+					recordEventProcessing('inventory_reserved', 'skipped')
+					return
 				}
+
+				logger.info(
+					{
+						orderId: order._id,
+						oldStatus,
+						newStatus: order.status,
+						correlationId,
+					},
+					'[Order] Order status updated to CONFIRMED (all inventory reserved)'
+				)
+
+				// Record state transition metrics
+				recordStateTransition(oldStatus, 'CONFIRMED', 'inventory_reserved')
+				recordSagaOperation('order_flow', 'reserve', 'success')
+				recordOrderValue(order.totalPrice, 'USD', 'confirmed')
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CONFIRMED',
+					payload: {
+						orderId: order._id,
+						totalPrice: order.totalPrice,
+						currency: 'USD',
+						products: order.products.map((p) => ({
+							productId: p._id.toString(),
+							quantity: p.quantity,
+							price: p.price,
+						})),
+						userId: order.user,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.confirmed',
+				})
 
 				await orderRepository.save(order, session)
 			})
 
 			endTimer()
 			recordEventProcessing('inventory_reserved', 'success')
+		} catch (error) {
+			logger.error(
+				{
+					error: error.message,
+					orderId: payload.orderId,
+					correlationId,
+				},
+				'[Order] Error processing INVENTORY_RESERVED'
+			)
+			endTimer()
+			recordEventProcessing('inventory_reserved', 'failed')
+			throw error
 		} finally {
 			session.endSession()
 		}
@@ -384,112 +387,122 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVE_FAILED'
 		)
 
-		const order = await orderRepository.findById(payload.orderId)
-		if (!order) {
-			logger.warn(
-				{ orderId: payload.orderId, correlationId },
-				'[Order] Order not found for INVENTORY_RESERVE_FAILED'
-			)
-			endTimer()
-			recordEventProcessing('inventory_reserve_failed', 'skipped')
-			return
-		}
-
-		logger.info(
-			{
-				orderId: payload.orderId,
-				currentStatus: order.status,
-				currentCancellationReason: order.cancellationReason,
-				products: order.products.map(p => ({
-					id: p._id.toString(),
-					reserved: p.reserved
-				})),
-				correlationId,
-			},
-			'[Order] Current order state before processing INVENTORY_RESERVE_FAILED'
-		)
-
-		// Check if order is already in final state
-		const fsm = createOrderStateMachine(order.status)
-		if (fsm.isFinalState()) {
-			logger.warn(
-				{
-					orderId: payload.orderId,
-					currentStatus: order.status,
-					existingCancellationReason: order.cancellationReason,
-					correlationId,
-				},
-				'[Order] Order already in final state, skipping transition'
-			)
-			endTimer()
-			recordEventProcessing('inventory_reserve_failed', 'skipped')
-			return
-		}
-
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				// Use state machine to validate transition
-				try {
-					fsm.cancel()
-					order.status = fsm.getState()
-
-					const failureReason = payload.reason || payload.message || 'Inventory reserve failed'
-					order.cancellationReason = failureReason
-
-					await orderRepository.save(order, session)
-
-					logger.info(
-						{
-							orderId: order._id,
-							oldStatus: 'PENDING',
-							newStatus: order.status,
-							cancellationReason: order.cancellationReason,
-							correlationId,
-						},
-						'[Order] Order status updated to CANCELLED (inventory reserve failed)'
-					)
-
-					// Record state transition and saga metrics
-					recordStateTransition('PENDING', 'CANCELLED', 'inventory_failed')
-					recordSagaOperation('order_flow', 'reserve', 'failed')
-					recordOrderValue(order.totalPrice, 'USD', 'cancelled')
-
-					// Compensation: Release seckill slot if this is a seckill order
-					const isSeckill = order.metadata?.source === 'seckill'
-					if (isSeckill) {
-						await this._publishSeckillRelease(order, session, correlationId, 'INVENTORY_RESERVE_FAILED')
-					}
-
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_CANCELLED',
-						payload: {
-							orderId: order._id,
-							reason: order.cancellationReason,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-						routingKey: 'order.cancelled',
-					})
-				} catch (error) {
-					logger.error(
-						{
-							error: error.message,
-							orderId: payload.orderId,
-							currentStatus: order.status,
-							correlationId,
-						},
-						'[Order] Invalid state transition for INVENTORY_RESERVE_FAILED'
+				// Read order INSIDE transaction with session for proper locking
+				const order = await orderRepository.findById(payload.orderId, session)
+				if (!order) {
+					logger.warn(
+						{ orderId: payload.orderId, correlationId },
+						'[Order] Order not found for INVENTORY_RESERVE_FAILED'
 					)
 					endTimer()
-					recordEventProcessing('inventory_reserve_failed', 'failed')
-					throw error
+					recordEventProcessing('inventory_reserve_failed', 'skipped')
+					return
 				}
+
+				logger.info(
+					{
+						orderId: payload.orderId,
+						currentStatus: order.status,
+						currentCancellationReason: order.cancellationReason,
+						products: order.products.map(p => ({
+							id: p._id.toString(),
+							reserved: p.reserved
+						})),
+						correlationId,
+					},
+					'[Order] Current order state before processing INVENTORY_RESERVE_FAILED'
+				)
+
+				// Check if order is already in final state
+				const fsm = createOrderStateMachine(order.status)
+				if (fsm.isFinalState()) {
+					logger.warn(
+						{
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							existingCancellationReason: order.cancellationReason,
+							correlationId,
+						},
+						'[Order] Order already in final state, skipping transition'
+					)
+					endTimer()
+					recordEventProcessing('inventory_reserve_failed', 'skipped')
+					return
+				}
+
+				// Use state machine to validate transition
+				const oldStatus = order.status
+				fsm.cancel()
+				order.status = fsm.getState()
+
+				// If status didn't change (idempotent), skip the rest
+				if (oldStatus === order.status) {
+					logger.info(
+						{ orderId: order._id, status: order.status, correlationId },
+						'[Order] Order already in target state, skipping (idempotent)'
+					)
+					endTimer()
+					recordEventProcessing('inventory_reserve_failed', 'skipped')
+					return
+				}
+
+				const failureReason = payload.reason || payload.message || 'Inventory reserve failed'
+				order.cancellationReason = failureReason
+
+				await orderRepository.save(order, session)
+
+				logger.info(
+					{
+						orderId: order._id,
+						oldStatus,
+						newStatus: order.status,
+						cancellationReason: order.cancellationReason,
+						correlationId,
+					},
+					'[Order] Order status updated to CANCELLED (inventory reserve failed)'
+				)
+
+				// Record state transition and saga metrics
+				recordStateTransition(oldStatus, 'CANCELLED', 'inventory_failed')
+				recordSagaOperation('order_flow', 'reserve', 'failed')
+				recordOrderValue(order.totalPrice, 'USD', 'cancelled')
+
+				// Compensation: Release seckill slot if this is a seckill order
+				const isSeckill = order.metadata?.source === 'seckill'
+				if (isSeckill) {
+					await this._publishSeckillRelease(order, session, correlationId, 'INVENTORY_RESERVE_FAILED')
+				}
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: order.cancellationReason,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.cancelled',
+				})
 			})
 
 			endTimer()
 			recordEventProcessing('inventory_reserve_failed', 'success')
+		} catch (error) {
+			logger.error(
+				{
+					error: error.message,
+					orderId: payload.orderId,
+					correlationId,
+				},
+				'[Order] Error processing INVENTORY_RESERVE_FAILED'
+			)
+			endTimer()
+			recordEventProcessing('inventory_reserve_failed', 'failed')
+			throw error
 		} finally {
 			session.endSession()
 		}
@@ -509,105 +522,116 @@ class OrderService {
 			'[Order] Processing PAYMENT_SUCCEEDED'
 		)
 
-		const order = await orderRepository.findById(payload.orderId)
-		if (!order) {
-			logger.warn(
-				{ orderId: payload.orderId, correlationId },
-				'[Order] Order not found for PAYMENT_SUCCEEDED'
-			)
-			endTimer()
-			recordEventProcessing('payment_succeeded', 'skipped')
-			return
-		}
-
-		// Check if order is already in final state
-		const fsm = createOrderStateMachine(order.status)
-		if (fsm.isFinalState()) {
-			logger.warn(
-				{
-					orderId: payload.orderId,
-					currentStatus: order.status,
-					correlationId,
-				},
-				'[Order] Order already in final state, skipping transition'
-			)
-			endTimer()
-			recordEventProcessing('payment_succeeded', 'skipped')
-			return
-		}
-
-		// Validate that order is in CONFIRMED state before payment
-		if (order.status !== 'CONFIRMED') {
-			logger.error(
-				{
-					orderId: payload.orderId,
-					currentStatus: order.status,
-					correlationId,
-				},
-				'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
-				order.status
-			)
-			endTimer()
-			recordEventProcessing('payment_succeeded', 'failed')
-			return
-		}
-
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				// Use state machine to validate transition: CONFIRMED → PAID
-				try {
-					fsm.pay()
-					order.status = fsm.getState()
-					await orderRepository.save(order, session)
-
-					logger.info(
-						{
-							orderId: order._id,
-							oldStatus: 'CONFIRMED',
-							newStatus: order.status,
-							transactionId: payload.transactionId,
-							correlationId,
-						},
-						'[Order] Order status updated to PAID (payment succeeded)'
+				// Read order INSIDE transaction with session for proper locking
+				const order = await orderRepository.findById(payload.orderId, session)
+				if (!order) {
+					logger.warn(
+						{ orderId: payload.orderId, correlationId },
+						'[Order] Order not found for PAYMENT_SUCCEEDED'
 					)
+					endTimer()
+					recordEventProcessing('payment_succeeded', 'skipped')
+					return
+				}
 
-					// Record state transition and saga metrics
-					recordStateTransition('CONFIRMED', 'PAID', 'payment_success')
-					recordSagaOperation('order_flow', 'payment', 'success')
-					recordOrderValue(order.totalPrice, 'USD', 'paid')
-
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_PAID',
-						payload: {
-							orderId: order._id,
-							transactionId: payload.transactionId,
-							amount: payload.amount,
-							currency: payload.currency,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-						routingKey: 'order.paid',
-					})
-				} catch (error) {
-					logger.error(
+				// Check if order is already in final state
+				const fsm = createOrderStateMachine(order.status)
+				if (fsm.isFinalState()) {
+					logger.warn(
 						{
-							error: error.message,
 							orderId: payload.orderId,
 							currentStatus: order.status,
 							correlationId,
 						},
-						'[Order] Invalid state transition for PAYMENT_SUCCEEDED'
+						'[Order] Order already in final state, skipping transition'
+					)
+					endTimer()
+					recordEventProcessing('payment_succeeded', 'skipped')
+					return
+				}
+
+				// Validate that order is in CONFIRMED state before payment
+				if (order.status !== 'CONFIRMED') {
+					logger.error(
+						{
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
+						order.status
 					)
 					endTimer()
 					recordEventProcessing('payment_succeeded', 'failed')
-					throw error
+					return
 				}
+
+				// Use state machine to validate transition: CONFIRMED → PAID
+				const oldStatus = order.status
+				fsm.pay()
+				order.status = fsm.getState()
+
+				// If status didn't change (idempotent), skip the rest
+				if (oldStatus === order.status) {
+					logger.info(
+						{ orderId: order._id, status: order.status, correlationId },
+						'[Order] Order already in target state, skipping (idempotent)'
+					)
+					endTimer()
+					recordEventProcessing('payment_succeeded', 'skipped')
+					return
+				}
+
+				await orderRepository.save(order, session)
+
+				logger.info(
+					{
+						orderId: order._id,
+						oldStatus,
+						newStatus: order.status,
+						transactionId: payload.transactionId,
+						correlationId,
+					},
+					'[Order] Order status updated to PAID (payment succeeded)'
+				)
+
+				// Record state transition and saga metrics
+				recordStateTransition(oldStatus, 'PAID', 'payment_success')
+				recordSagaOperation('order_flow', 'payment', 'success')
+				recordOrderValue(order.totalPrice, 'USD', 'paid')
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_PAID',
+					payload: {
+						orderId: order._id,
+						transactionId: payload.transactionId,
+						amount: payload.amount,
+						currency: payload.currency,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.paid',
+				})
 			})
 
 			endTimer()
 			recordEventProcessing('payment_succeeded', 'success')
+		} catch (error) {
+			logger.error(
+				{
+					error: error.message,
+					orderId: payload.orderId,
+					correlationId,
+				},
+				'[Order] Error processing PAYMENT_SUCCEEDED'
+			)
+			endTimer()
+			recordEventProcessing('payment_succeeded', 'failed')
+			throw error
 		} finally {
 			session.endSession()
 		}
@@ -629,134 +653,145 @@ class OrderService {
 			'[Order] Processing PAYMENT_FAILED'
 		)
 
-		const order = await orderRepository.findById(payload.orderId)
-		if (!order) {
-			logger.warn(
-				{ orderId: payload.orderId, correlationId },
-				'[Order] Order not found for PAYMENT_FAILED'
-			)
-			endTimer()
-			recordEventProcessing('payment_failed', 'skipped')
-			return
-		}
-
-		// Check if order is already in final state
-		const fsm = createOrderStateMachine(order.status)
-		if (fsm.isFinalState()) {
-			logger.warn(
-				{
-					orderId: payload.orderId,
-					currentStatus: order.status,
-					correlationId,
-				},
-				'[Order] Order already in final state, skipping transition'
-			)
-			endTimer()
-			recordEventProcessing('payment_failed', 'skipped')
-			return
-		}
-
-		// Validate that order is in CONFIRMED state
-		if (order.status !== 'CONFIRMED') {
-			logger.error(
-				{
-					orderId: payload.orderId,
-					currentStatus: order.status,
-					correlationId,
-				},
-				'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
-				order.status
-			)
-			endTimer()
-			recordEventProcessing('payment_failed', 'failed')
-			return
-		}
-
 		const session = await mongoose.startSession()
 		try {
 			await session.withTransaction(async () => {
-				// Use state machine to validate transition: CONFIRMED → CANCELLED
-				try {
-					fsm.cancel()
-					order.status = fsm.getState()
-					order.cancellationReason = payload.reason || 'Payment failed'
-					await orderRepository.save(order, session)
-
-					logger.info(
-						{
-							orderId: order._id,
-							oldStatus: 'CONFIRMED',
-							newStatus: order.status,
-							cancellationReason: order.cancellationReason,
-							transactionId: payload.transactionId,
-							correlationId,
-						},
-						'[Order] Order status updated to CANCELLED (payment failed)'
+				// Read order INSIDE transaction with session for proper locking
+				const order = await orderRepository.findById(payload.orderId, session)
+				if (!order) {
+					logger.warn(
+						{ orderId: payload.orderId, correlationId },
+						'[Order] Order not found for PAYMENT_FAILED'
 					)
+					endTimer()
+					recordEventProcessing('payment_failed', 'skipped')
+					return
+				}
 
-					// Record state transition and saga metrics
-					recordStateTransition('CONFIRMED', 'CANCELLED', 'payment_failed')
-					recordSagaOperation('order_flow', 'payment', 'failed')
-					recordOrderValue(order.totalPrice, 'USD', 'cancelled')
-
-					// Release reserved inventory (compensation)
-					for (const product of order.products) {
-						if (product.reserved) {
-							await this.outboxManager.createEvent({
-								eventType: 'INVENTORY_RELEASE_REQUEST',
-								payload: {
-									type: 'RELEASE',
-									data: {
-										orderId: order._id,
-										productId: product._id.toString(),
-										quantity: product.quantity,
-										reason: 'PAYMENT_FAILED',
-									},
-									timestamp: new Date().toISOString(),
-								},
-								session,
-								correlationId,
-								routingKey: 'order.release',
-							})
-							recordSagaOperation('order_flow', 'release', 'compensated')
-						}
-					}
-
-					// Compensation: Release seckill slot if this is a seckill order
-					const isSeckill = order.metadata?.source === 'seckill'
-					if (isSeckill) {
-						await this._publishSeckillRelease(order, session, correlationId, 'PAYMENT_FAILED')
-					}
-
-					await this.outboxManager.createEvent({
-						eventType: 'ORDER_CANCELLED',
-						payload: {
-							orderId: order._id,
-							reason: order.cancellationReason,
-							timestamp: new Date().toISOString(),
-						},
-						session,
-						correlationId,
-						routingKey: 'order.cancelled',
-					})
-				} catch (error) {
-					logger.error(
+				// Check if order is already in final state
+				const fsm = createOrderStateMachine(order.status)
+				if (fsm.isFinalState()) {
+					logger.warn(
 						{
-							error: error.message,
 							orderId: payload.orderId,
 							currentStatus: order.status,
 							correlationId,
 						},
-						'[Order] Invalid state transition for PAYMENT_FAILED'
+						'[Order] Order already in final state, skipping transition'
+					)
+					endTimer()
+					recordEventProcessing('payment_failed', 'skipped')
+					return
+				}
+
+				// Validate that order is in CONFIRMED state
+				if (order.status !== 'CONFIRMED') {
+					logger.error(
+						{
+							orderId: payload.orderId,
+							currentStatus: order.status,
+							correlationId,
+						},
+						'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
+						order.status
 					)
 					endTimer()
 					recordEventProcessing('payment_failed', 'failed')
-					throw error
+					return
 				}
+
+				// Use state machine to validate transition: CONFIRMED → CANCELLED
+				const oldStatus = order.status
+				fsm.cancel()
+				order.status = fsm.getState()
+
+				// If status didn't change (idempotent), skip the rest
+				if (oldStatus === order.status) {
+					logger.info(
+						{ orderId: order._id, status: order.status, correlationId },
+						'[Order] Order already in target state, skipping (idempotent)'
+					)
+					endTimer()
+					recordEventProcessing('payment_failed', 'skipped')
+					return
+				}
+
+				order.cancellationReason = payload.reason || 'Payment failed'
+				await orderRepository.save(order, session)
+
+				logger.info(
+					{
+						orderId: order._id,
+						oldStatus,
+						newStatus: order.status,
+						cancellationReason: order.cancellationReason,
+						transactionId: payload.transactionId,
+						correlationId,
+					},
+					'[Order] Order status updated to CANCELLED (payment failed)'
+				)
+
+				// Record state transition and saga metrics
+				recordStateTransition(oldStatus, 'CANCELLED', 'payment_failed')
+				recordSagaOperation('order_flow', 'payment', 'failed')
+				recordOrderValue(order.totalPrice, 'USD', 'cancelled')
+
+				// Release reserved inventory (compensation)
+				for (const product of order.products) {
+					if (product.reserved) {
+						await this.outboxManager.createEvent({
+							eventType: 'INVENTORY_RELEASE_REQUEST',
+							payload: {
+								type: 'RELEASE',
+								data: {
+									orderId: order._id,
+									productId: product._id.toString(),
+									quantity: product.quantity,
+									reason: 'PAYMENT_FAILED',
+								},
+								timestamp: new Date().toISOString(),
+							},
+							session,
+							correlationId,
+							routingKey: 'order.release',
+						})
+						recordSagaOperation('order_flow', 'release', 'compensated')
+					}
+				}
+
+				// Compensation: Release seckill slot if this is a seckill order
+				const isSeckill = order.metadata?.source === 'seckill'
+				if (isSeckill) {
+					await this._publishSeckillRelease(order, session, correlationId, 'PAYMENT_FAILED')
+				}
+
+				await this.outboxManager.createEvent({
+					eventType: 'ORDER_CANCELLED',
+					payload: {
+						orderId: order._id,
+						reason: order.cancellationReason,
+						timestamp: new Date().toISOString(),
+					},
+					session,
+					correlationId,
+					routingKey: 'order.cancelled',
+				})
 			})
 
 			endTimer()
 			recordEventProcessing('payment_failed', 'success')
+		} catch (error) {
+			logger.error(
+				{
+					error: error.message,
+					orderId: payload.orderId,
+					correlationId,
+				},
+				'[Order] Error processing PAYMENT_FAILED'
+			)
+			endTimer()
+			recordEventProcessing('payment_failed', 'failed')
+			throw error
 		} finally {
 			session.endSession()
 		}
