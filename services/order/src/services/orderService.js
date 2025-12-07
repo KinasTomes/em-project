@@ -18,6 +18,50 @@ const {
 // Helper function for getting traceId as correlationId
 const { getCurrentTraceId } = require('@ecommerce/tracing')
 
+/**
+ * Helper: Check if error is a MongoDB Write Conflict (retryable)
+ */
+function isWriteConflict(error) {
+	return error && error.message && (
+		error.message.includes('Write conflict') ||
+		error.message.includes('WriteConflict') ||
+		error.code === 112
+	)
+}
+
+/**
+ * Helper: Execute transaction with retry logic for Write Conflicts
+ * @param {Function} transactionFn - Async function that receives session
+ * @param {Object} options - { maxRetries, retryDelayMs, operationName }
+ */
+async function withRetryTransaction(transactionFn, options = {}) {
+	const { maxRetries = 3, retryDelayMs = 100, operationName = 'transaction' } = options
+
+	for (let attempt = 1; attempt <= maxRetries; attempt++) {
+		const session = await mongoose.startSession()
+		try {
+			await session.withTransaction(async () => {
+				await transactionFn(session)
+			})
+			session.endSession()
+			return // Success
+		} catch (error) {
+			session.endSession()
+
+			if (isWriteConflict(error) && attempt < maxRetries) {
+				logger.warn(
+					{ attempt, maxRetries, error: error.message, operationName },
+					`⚠️ [Order] Write conflict detected, retrying ${operationName} (${attempt}/${maxRetries})...`
+				)
+				await new Promise(resolve => setTimeout(resolve, retryDelayMs * Math.pow(2, attempt - 1)))
+				continue
+			}
+
+			throw error // Non-retryable or max retries exceeded
+		}
+	}
+}
+
 class OrderService {
 	constructor(outboxManager) {
 		this.outboxManager = outboxManager
@@ -257,9 +301,8 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVED'
 		)
 
-		const session = await mongoose.startSession()
 		try {
-			await session.withTransaction(async () => {
+			await withRetryTransaction(async (session) => {
 				// Read order INSIDE transaction with session for proper locking
 				const order = await orderRepository.findById(payload.orderId, session)
 				if (!order) {
@@ -267,7 +310,6 @@ class OrderService {
 						{ orderId: payload.orderId, correlationId },
 						'[Order] Order not found for INVENTORY_RESERVED'
 					)
-					endTimer()
 					recordEventProcessing('inventory_reserved', 'skipped')
 					return
 				}
@@ -316,7 +358,6 @@ class OrderService {
 						recordSagaOperation('order_flow', 'reserve', 'compensated')
 					}
 
-					endTimer()
 					recordEventProcessing('inventory_reserved', 'skipped')
 					return
 				}
@@ -337,7 +378,6 @@ class OrderService {
 						{ orderId: order._id, status: order.status, correlationId },
 						'[Order] Order already in target state, skipping (idempotent)'
 					)
-					endTimer()
 					recordEventProcessing('inventory_reserved', 'skipped')
 					return
 				}
@@ -377,7 +417,7 @@ class OrderService {
 				})
 
 				await orderRepository.save(order, session)
-			})
+			}, { operationName: 'handleInventoryReserved' })
 
 			endTimer()
 			recordEventProcessing('inventory_reserved', 'success')
@@ -393,8 +433,6 @@ class OrderService {
 			endTimer()
 			recordEventProcessing('inventory_reserved', 'failed')
 			throw error
-		} finally {
-			session.endSession()
 		}
 	}
 
@@ -415,9 +453,8 @@ class OrderService {
 			'[Order] Processing INVENTORY_RESERVE_FAILED'
 		)
 
-		const session = await mongoose.startSession()
 		try {
-			await session.withTransaction(async () => {
+			await withRetryTransaction(async (session) => {
 				// Read order INSIDE transaction with session for proper locking
 				const order = await orderRepository.findById(payload.orderId, session)
 				if (!order) {
@@ -425,7 +462,6 @@ class OrderService {
 						{ orderId: payload.orderId, correlationId },
 						'[Order] Order not found for INVENTORY_RESERVE_FAILED'
 					)
-					endTimer()
 					recordEventProcessing('inventory_reserve_failed', 'skipped')
 					return
 				}
@@ -456,7 +492,6 @@ class OrderService {
 						},
 						'[Order] Order already in final state, skipping transition'
 					)
-					endTimer()
 					recordEventProcessing('inventory_reserve_failed', 'skipped')
 					return
 				}
@@ -472,7 +507,6 @@ class OrderService {
 						{ orderId: order._id, status: order.status, correlationId },
 						'[Order] Order already in target state, skipping (idempotent)'
 					)
-					endTimer()
 					recordEventProcessing('inventory_reserve_failed', 'skipped')
 					return
 				}
@@ -515,7 +549,7 @@ class OrderService {
 					correlationId,
 					routingKey: 'order.cancelled',
 				})
-			})
+			}, { operationName: 'handleInventoryReserveFailed' })
 
 			endTimer()
 			recordEventProcessing('inventory_reserve_failed', 'success')
@@ -531,8 +565,6 @@ class OrderService {
 			endTimer()
 			recordEventProcessing('inventory_reserve_failed', 'failed')
 			throw error
-		} finally {
-			session.endSession()
 		}
 	}
 
@@ -550,9 +582,8 @@ class OrderService {
 			'[Order] Processing PAYMENT_SUCCEEDED'
 		)
 
-		const session = await mongoose.startSession()
 		try {
-			await session.withTransaction(async () => {
+			await withRetryTransaction(async (session) => {
 				// Read order INSIDE transaction with session for proper locking
 				const order = await orderRepository.findById(payload.orderId, session)
 				if (!order) {
@@ -560,7 +591,6 @@ class OrderService {
 						{ orderId: payload.orderId, correlationId },
 						'[Order] Order not found for PAYMENT_SUCCEEDED'
 					)
-					endTimer()
 					recordEventProcessing('payment_succeeded', 'skipped')
 					return
 				}
@@ -576,7 +606,6 @@ class OrderService {
 						},
 						'[Order] Order already in final state, skipping transition'
 					)
-					endTimer()
 					recordEventProcessing('payment_succeeded', 'skipped')
 					return
 				}
@@ -592,7 +621,6 @@ class OrderService {
 						'[Order] Cannot process payment: Order must be CONFIRMED before payment. Current status: ' +
 						order.status
 					)
-					endTimer()
 					recordEventProcessing('payment_succeeded', 'failed')
 					return
 				}
@@ -608,7 +636,6 @@ class OrderService {
 						{ orderId: order._id, status: order.status, correlationId },
 						'[Order] Order already in target state, skipping (idempotent)'
 					)
-					endTimer()
 					recordEventProcessing('payment_succeeded', 'skipped')
 					return
 				}
@@ -644,7 +671,7 @@ class OrderService {
 					correlationId,
 					routingKey: 'order.paid',
 				})
-			})
+			}, { operationName: 'handlePaymentSucceeded' })
 
 			endTimer()
 			recordEventProcessing('payment_succeeded', 'success')
@@ -660,8 +687,6 @@ class OrderService {
 			endTimer()
 			recordEventProcessing('payment_succeeded', 'failed')
 			throw error
-		} finally {
-			session.endSession()
 		}
 	}
 
@@ -681,9 +706,8 @@ class OrderService {
 			'[Order] Processing PAYMENT_FAILED'
 		)
 
-		const session = await mongoose.startSession()
 		try {
-			await session.withTransaction(async () => {
+			await withRetryTransaction(async (session) => {
 				// Read order INSIDE transaction with session for proper locking
 				const order = await orderRepository.findById(payload.orderId, session)
 				if (!order) {
@@ -691,7 +715,6 @@ class OrderService {
 						{ orderId: payload.orderId, correlationId },
 						'[Order] Order not found for PAYMENT_FAILED'
 					)
-					endTimer()
 					recordEventProcessing('payment_failed', 'skipped')
 					return
 				}
@@ -707,7 +730,6 @@ class OrderService {
 						},
 						'[Order] Order already in final state, skipping transition'
 					)
-					endTimer()
 					recordEventProcessing('payment_failed', 'skipped')
 					return
 				}
@@ -723,7 +745,6 @@ class OrderService {
 						'[Order] Cannot process payment failure: Order must be CONFIRMED. Current status: ' +
 						order.status
 					)
-					endTimer()
 					recordEventProcessing('payment_failed', 'failed')
 					return
 				}
@@ -739,7 +760,6 @@ class OrderService {
 						{ orderId: order._id, status: order.status, correlationId },
 						'[Order] Order already in target state, skipping (idempotent)'
 					)
-					endTimer()
 					recordEventProcessing('payment_failed', 'skipped')
 					return
 				}
@@ -804,7 +824,7 @@ class OrderService {
 					correlationId,
 					routingKey: 'order.cancelled',
 				})
-			})
+			}, { operationName: 'handlePaymentFailed' })
 
 			endTimer()
 			recordEventProcessing('payment_failed', 'success')
@@ -820,8 +840,6 @@ class OrderService {
 			endTimer()
 			recordEventProcessing('payment_failed', 'failed')
 			throw error
-		} finally {
-			session.endSession()
 		}
 	}
 
