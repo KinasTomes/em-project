@@ -46,18 +46,19 @@ async function handleOrderCreated(message, metadata = {}) {
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-		// CRITICAL: Check idempotency BEFORE EVERY attempt (including first)
+		// CRITICAL: Atomic lock acquisition to prevent duplicate processing
 		// With prefetch=50, multiple instances can receive same message
-		// Must check BEFORE processing to prevent duplicate RESERVED_SUCCESS/FAILED events
+		// Use Redis SET NX to atomically check AND lock in one operation
+		// Only ONE instance will acquire lock and proceed with processing
 		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 		if (idempotencyService) {
-			const alreadyProcessed = await idempotencyService.isProcessed('ORDER_CREATED', orderId)
-			if (alreadyProcessed) {
+			const lockAcquired = await idempotencyService.tryAcquireProcessingLock('ORDER_CREATED', orderId)
+			if (!lockAcquired) {
 				logger.warn(
 					{ orderId, attempt, eventId, correlationId },
-					`⚠️ [Inventory] ORDER_CREATED already processed by another instance, skipping (idempotency)`
+					`⚠️ [Inventory] ORDER_CREATED already being processed by another instance, skipping (atomic lock)`
 				)
-				return // Another instance handled it
+				return // Another instance is handling it
 			}
 		}
 
@@ -93,22 +94,9 @@ async function handleOrderCreated(message, metadata = {}) {
 
 			if (result.success) {
 				// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-				// CRITICAL: Before creating SUCCESS event, verify reserve actually succeeded
-				// Check if another instance already processed this (idempotency double-check)
-				// This prevents SUCCESS event creation when reserve will fail on commit
+				// Reserve successful - create SUCCESS event and commit
+				// Lock already acquired via tryAcquireProcessingLock, no need to double-check
 				// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-				if (idempotencyService) {
-					const alreadyProcessed = await idempotencyService.isProcessed('ORDER_CREATED', orderId)
-					if (alreadyProcessed) {
-						await session.abortTransaction()
-						session.endSession()
-						logger.info(
-							{ orderId, attempt, correlationId },
-							'✓ [Inventory] Another instance completed processing during our reserve operation, aborting'
-						)
-						return
-					}
-				}
 
 				try {
 					await outboxManager.createEvent({
@@ -131,11 +119,6 @@ async function handleOrderCreated(message, metadata = {}) {
 
 					await session.commitTransaction()
 					session.endSession()
-
-					// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
-					if (idempotencyService) {
-						await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-					}
 
 					logger.info(
 						{
@@ -161,11 +144,8 @@ async function handleOrderCreated(message, metadata = {}) {
 					if (isDuplicateSuccess) {
 						logger.info(
 							{ orderId, attempt, error: commitError.message },
-							'✓ [Inventory] SUCCESS event already exists (duplicate), marking as processed'
+							'✓ [Inventory] SUCCESS event already exists (duplicate), exiting successfully'
 						)
-						if (idempotencyService) {
-							await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-						}
 						return // Exit successfully
 					}
 
@@ -219,11 +199,6 @@ async function handleOrderCreated(message, metadata = {}) {
 
 					await failSession.commitTransaction()
 
-					// Mark as processed IMMEDIATELY after commit to prevent other instances from processing
-					if (idempotencyService) {
-						await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-					}
-
 					logger.warn(
 						{
 							orderId,
@@ -244,10 +219,6 @@ async function handleOrderCreated(message, metadata = {}) {
 							{ orderId, correlationId, error: failError.message },
 							'✓ [Inventory] FAILED event already exists, treating as processed (idempotent)'
 						)
-						// Mark as processed even though we didn't create the event
-						if (idempotencyService) {
-							await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-						}
 					} else {
 						await failSession.abortTransaction()
 						throw failError
@@ -276,11 +247,6 @@ async function handleOrderCreated(message, metadata = {}) {
 					{ orderId, eventId, correlationId, attempt, error: error.message },
 					`✓ [Inventory] Duplicate SUCCESS eventId - another instance already reserved successfully. Treating as SUCCESS and exiting (idempotent)`
 				)
-				
-				// Mark as processed to prevent future duplicates
-				if (idempotencyService) {
-					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-				}
 				
 				// IMPORTANT: Return immediately - do NOT create FAILED event!
 				// The reservation already succeeded in another instance
@@ -334,11 +300,6 @@ async function handleOrderCreated(message, metadata = {}) {
 				})
 
 				await errorSession.commitTransaction()
-
-				// Mark as processed after commit to prevent other instances from processing
-				if (idempotencyService) {
-					await idempotencyService.markAsProcessed('ORDER_CREATED', orderId)
-				}
 			} catch (outboxError) {
 				// Check if this outbox creation also failed due to duplicate key
 				// This means the error event was already created - safe to ignore

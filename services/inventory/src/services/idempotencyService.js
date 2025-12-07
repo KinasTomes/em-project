@@ -83,6 +83,51 @@ class IdempotencyService {
 	}
 
 	/**
+	 * Atomically try to acquire lock for processing event
+	 * Uses Redis SET NX (SET if Not eXists) for atomic check-and-set
+	 * 
+	 * @param {string} eventType - Type of event
+	 * @param {string} identifier - Unique identifier (orderId or productId)
+	 * @param {number} ttlSeconds - Time to live in seconds (default: 24 hours)
+	 * @returns {Promise<boolean>} True if lock acquired (first to process), false if already locked
+	 */
+	async tryAcquireProcessingLock(eventType, identifier, ttlSeconds = 86400) {
+		if (!this.isConnected || !this.client) {
+			await this.connect()
+		}
+
+		try {
+			const key = this._generateKey(eventType, identifier)
+			const result = await this.client.set(key, JSON.stringify({
+				lockedAt: new Date().toISOString(),
+				eventType,
+				identifier,
+			}), {
+				NX: true, // Only set if key does NOT exist
+				EX: ttlSeconds, // 24 hours TTL
+			})
+			
+			// result is 'OK' if set succeeded, null if key already exists
+			const lockAcquired = result === 'OK'
+			
+			if (lockAcquired) {
+				logger.debug({ eventType, identifier }, '[Inventory] ✓ Processing lock acquired')
+			} else {
+				logger.debug({ eventType, identifier }, '[Inventory] ✗ Processing lock already held by another instance')
+			}
+			
+			return lockAcquired
+		} catch (error) {
+			logger.error(
+				{ error: error.message, eventType, identifier },
+				'[Inventory] Error acquiring processing lock'
+			)
+			// On error, assume lock NOT acquired to prevent duplicate processing
+			return false
+		}
+	}
+
+	/**
 	 * Mark event as processed
 	 * @param {string} eventType - Type of event
 	 * @param {string} identifier - Unique identifier (orderId or productId)
