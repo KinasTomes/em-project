@@ -15,7 +15,7 @@ const { metricsMiddleware, metricsHandler } = require("@ecommerce/metrics");
 const gatewayMetrics = require("./metrics");
 
 // OpenTelemetry for trace context propagation
-const { trace, context, propagation } = require("@opentelemetry/api");
+const { trace, context, propagation } = require("@ecommerce/tracing");
 
 // Import middlewares
 const {

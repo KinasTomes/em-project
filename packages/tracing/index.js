@@ -99,4 +99,9 @@ module.exports = {
   getCurrentTraceId,
   getCurrentSpanId,
   getCurrentSpanContext,
+  // Export OpenTelemetry API for services that need direct access
+  // (e.g., for trace context propagation in API Gateway)
+  trace,
+  context,
+  propagation: require('@opentelemetry/api').propagation,
 };
