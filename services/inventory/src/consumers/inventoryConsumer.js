@@ -59,8 +59,11 @@ async function handleOrderCreated(message, metadata = {}) {
 	}
 
 	// Retry configuration for Write Conflicts
-	const MAX_RETRIES = 3
-	const RETRY_DELAY_MS = 100
+	// High contention on single product → need aggressive retry
+	// With 20 concurrent updates to same document, Write Conflicts are expected
+	const MAX_RETRIES = 20  // Increased from 3 to handle high contention
+	const RETRY_DELAY_BASE_MS = 50  // Start with shorter delay
+	const RETRY_DELAY_MAX_MS = 500  // Cap maximum delay
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 		const session = await mongoose.startSession()
@@ -158,12 +161,20 @@ async function handleOrderCreated(message, metadata = {}) {
 					)
 
 					if (isWriteConflict && attempt < MAX_RETRIES) {
-						logger.warn(
-							{ orderId, attempt, error: commitError.message },
-							'⚠️ [Inventory] Write conflict during SUCCESS commit, will retry entire operation'
+						// Exponential backoff with jitter to reduce contention
+						// delay = min(base * 2^attempt + random(0-50ms), max)
+						const exponentialDelay = Math.min(
+							RETRY_DELAY_BASE_MS * Math.pow(2, attempt - 1),
+							RETRY_DELAY_MAX_MS
 						)
-						// Don't create FAILED event - just retry from the beginning
-						await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)))
+						const jitter = Math.random() * 50 // 0-50ms random jitter
+						const delay = exponentialDelay + jitter
+						
+						logger.warn(
+							{ orderId, attempt, maxRetries: MAX_RETRIES, delay: Math.round(delay), error: commitError.message },
+							`⚠️ [Inventory] Write conflict during SUCCESS commit, retrying (${attempt}/${MAX_RETRIES}) after ${Math.round(delay)}ms...`
+						)
+						await new Promise(resolve => setTimeout(resolve, delay))
 						continue // Retry the entire reserve operation
 					}
 
@@ -262,12 +273,20 @@ async function handleOrderCreated(message, metadata = {}) {
 			)
 
 			if (isWriteConflict && attempt < MAX_RETRIES) {
-				logger.warn(
-					{ orderId, attempt, maxRetries: MAX_RETRIES, error: error.message },
-					`⚠️ [Inventory] Write conflict detected, retrying (${attempt}/${MAX_RETRIES})...`
+				// Exponential backoff with jitter to reduce contention
+				// delay = min(base * 2^attempt + random(0-50ms), max)
+				const exponentialDelay = Math.min(
+					RETRY_DELAY_BASE_MS * Math.pow(2, attempt - 1),
+					RETRY_DELAY_MAX_MS
 				)
-				// Exponential backoff: 100ms, 200ms, 400ms
-				await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)))
+				const jitter = Math.random() * 50 // 0-50ms random jitter
+				const delay = exponentialDelay + jitter
+				
+				logger.warn(
+					{ orderId, attempt, maxRetries: MAX_RETRIES, delay: Math.round(delay), error: error.message },
+					`⚠️ [Inventory] Write conflict detected, retrying (${attempt}/${MAX_RETRIES}) after ${Math.round(delay)}ms...`
+				)
+				await new Promise(resolve => setTimeout(resolve, delay))
 				continue // Retry
 			}
 
