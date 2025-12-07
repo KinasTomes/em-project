@@ -304,6 +304,23 @@ async function handleSeckillReserve(products, session, options = {}) {
 			{ error: error.message, orderId, correlationId },
 			'❌ [Inventory] Seckill Blind Update error'
 		)
+
+		// Check if this is a Write Conflict (retryable error)
+		// Re-throw to allow caller's retry logic to handle it
+		const isWriteConflict =
+			error.message &&
+			(error.message.includes('Write conflict') ||
+				error.message.includes('WriteConflict') ||
+				error.code === 112)
+
+		if (isWriteConflict) {
+			logger.warn(
+				{ orderId, correlationId, error: error.message },
+				'⚠️ [Inventory] Seckill Blind Update - Write conflict detected, re-throwing for retry'
+			)
+			throw error // Let caller handle retry
+		}
+
 		return {
 			success: false,
 			message: error.message,
