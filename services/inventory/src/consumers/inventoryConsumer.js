@@ -67,6 +67,10 @@ async function handleOrderCreated(message, metadata = {}) {
 		try {
 			let result
 
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// Execute reserve operation (Seckill or Regular)
+			// This may throw Write Conflicts - caught below for retry
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 			if (isSeckill) {
 				// SECKILL LOGIC: "Blind Update" - Trust Redis, atomic DB update
 				// Redis has already validated and reserved. Just sync DB state.
@@ -81,6 +85,11 @@ async function handleOrderCreated(message, metadata = {}) {
 					correlationId: correlatedId,
 				})
 			}
+
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+			// Reserve completed (no Write Conflict thrown)
+			// Check business logic result
+			// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 			if (result.success) {
 				// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
