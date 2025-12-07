@@ -1,0 +1,127 @@
+# Prometheus Configuration for E-commerce Microservices
+# ==============================================================================
+
+global:
+  scrape_interval: 15s # How often to scrape targets
+  evaluation_interval: 15s # How often to evaluate rules
+  scrape_timeout: 10s # Timeout for scraping
+
+# Alertmanager configuration (optional - can be added later)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+# rule_files:
+#   - "alert_rules.yml"
+
+# A scrape configuration containing the endpoints to scrape
+scrape_configs:
+  # ==============================================================================
+  # 1. Prometheus self-monitoring
+  # ==============================================================================
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          environment: 'production'
+
+  # ==============================================================================
+  # 2. Infrastructure Node Services (infras: 136.110.34.207)
+  # ==============================================================================
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth:3001']
+        labels:
+          service: 'auth'
+          node: 'infras'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  - job_name: 'product-service'
+    static_configs:
+      - targets: ['product:3004']
+        labels:
+          service: 'product'
+          node: 'infras'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  # ==============================================================================
+  # 3. Hot Node Services (hot: 136.110.42.41)
+  # ==============================================================================
+  - job_name: 'api-gateway'
+    static_configs:
+      # API Gateway exposed via Nginx Load Balancer on Hot Node
+      - targets: ['136.110.42.41:3003']
+        labels:
+          service: 'api-gateway'
+          node: 'hot'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  - job_name: 'seckill-service'
+    static_configs:
+      # Seckill service (4 replicas behind load balancer)
+      - targets: ['136.110.42.41:3007']
+        labels:
+          service: 'seckill'
+          node: 'hot'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  # ==============================================================================
+  # 4. Cold Node Services (cold: 34.177.94.30)
+  # ==============================================================================
+  - job_name: 'order-service'
+    static_configs:
+      # Order service (4 replicas behind load balancer)
+      - targets: ['34.177.94.30:3002']
+        labels:
+          service: 'order'
+          node: 'cold'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  - job_name: 'inventory-service'
+    static_configs:
+      # Inventory service (2 replicas behind load balancer)
+      - targets: ['34.177.94.30:3005']
+        labels:
+          service: 'inventory'
+          node: 'cold'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  - job_name: 'payment-service'
+    static_configs:
+      # Payment service (2 replicas behind load balancer)
+      - targets: ['34.177.94.30:3006']
+        labels:
+          service: 'payment'
+          node: 'cold'
+          environment: 'production'
+    metrics_path: '/metrics'
+
+  # ==============================================================================
+  # 5. Infrastructure Components
+  # ==============================================================================
+  # RabbitMQ metrics (if rabbitmq_prometheus plugin is enabled)
+  # - job_name: 'rabbitmq'
+  #   static_configs:
+  #     - targets: ['rabbitmq:15692']
+  #       labels:
+  #         service: 'rabbitmq'
+  #         node: 'infras'
+  #   metrics_path: '/metrics'
+
+  # Redis metrics (if redis_exporter is added)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+  #         node: 'infras'
