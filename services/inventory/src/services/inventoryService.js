@@ -134,6 +134,19 @@ class InventoryService {
 			try {
 				return await executeReserveBatch(externalSession)
 			} catch (error) {
+				// Check if this is a Write Conflict (retryable error)
+				// Re-throw to allow caller's retry logic to handle it
+				const isWriteConflict = error.message && (
+					error.message.includes('Write conflict') ||
+					error.message.includes('WriteConflict') ||
+					error.code === 112 // MongoDB WriteConflict error code
+				)
+				
+				if (isWriteConflict) {
+					logger.warn(`[InventoryService] Write conflict detected, re-throwing for retry: ${error.message}`)
+					throw error // Let caller handle retry
+				}
+				
 				logger.warn(`[InventoryService] Batch reservation failed: ${error.message}`)
 				return { success: false, message: error.message }
 			}
