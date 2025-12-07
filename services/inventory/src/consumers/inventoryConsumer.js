@@ -432,6 +432,20 @@ async function handleOrderCancelled(message, metadata = {}) {
 		'🔓 [Inventory] Handling ORDER_CANCELLED - Releasing reserved stock'
 	)
 
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// Atomic lock to prevent duplicate release
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	if (idempotencyService) {
+		const lockAcquired = await idempotencyService.tryAcquireProcessingLock('ORDER_CANCELLED', orderId)
+		if (!lockAcquired) {
+			logger.warn(
+				{ orderId, eventId, correlationId },
+				`⚠️ [Inventory] ORDER_CANCELLED already being processed by another instance, skipping (atomic lock)`
+			)
+			return
+		}
+	}
+
 	try {
 		if (!products || products.length === 0) {
 			logger.warn(
@@ -540,6 +554,20 @@ async function handlePaymentFailed(message, metadata = {}) {
 		{ orderId, reason, eventId, correlationId },
 		'💳 [Inventory] Handling PAYMENT_FAILED - Starting compensation (release stock)'
 	)
+
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// Atomic lock to prevent duplicate compensation
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	if (idempotencyService) {
+		const lockAcquired = await idempotencyService.tryAcquireProcessingLock('PAYMENT_FAILED', orderId)
+		if (!lockAcquired) {
+			logger.warn(
+				{ orderId, eventId, correlationId },
+				`⚠️ [Inventory] PAYMENT_FAILED already being processed by another instance, skipping (atomic lock)`
+			)
+			return
+		}
+	}
 
 	try {
 		if (!products || products.length === 0) {
@@ -693,21 +721,11 @@ async function routeInventoryEvent(rawMessage, metadata = {}) {
 	)
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	// Idempotency Check (Redis - fast check)
+	// NOTE: Idempotency is handled INSIDE each event handler
+	// Each handler uses atomic Redis locks (SET NX) specific to their use case
+	// ORDER_CREATED: tryAcquireProcessingLock with orderId
+	// Other events: similar atomic locks with their respective identifiers
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	if (idempotencyService) {
-		const alreadyProcessed = await idempotencyService.isProcessed(
-			eventType,
-			idempotencyKey
-		)
-		if (alreadyProcessed) {
-			logger.warn(
-				{ eventType, idempotencyKey, eventId, correlationId },
-				`⚠️ [Inventory] Event ${eventType} already processed, skipping (idempotency)`
-			)
-			return // Skip duplicate processing
-		}
-	}
 
 	// Route to appropriate handler
 	try {
@@ -730,11 +748,10 @@ async function routeInventoryEvent(rawMessage, metadata = {}) {
 		}
 
 		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-		// Mark as Processed (Redis Idempotency)
+		// NOTE: No need to mark as processed here
+		// Each handler already acquired atomic lock via tryAcquireProcessingLock
+		// The lock serves as both idempotency check AND processing marker
 		// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-		if (idempotencyService) {
-			await idempotencyService.markAsProcessed(eventType, idempotencyKey)
-		}
 
 		logger.info(
 			{ eventType, idempotencyKey, eventId, correlationId },
