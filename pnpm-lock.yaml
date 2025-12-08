@@ -371,6 +371,9 @@ importers:
       node-fetch:
         specifier: ^3.3.2
         version: 3.3.2
+      redis:
+        specifier: ^4.6.13
+        version: 4.7.1
       uuid:
         specifier: ^9.0.0
         version: 9.0.1

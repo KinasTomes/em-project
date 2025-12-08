@@ -5,13 +5,16 @@ const {
 	startSearchTimer,
 	recordInventorySync,
 	startInventorySyncTimer,
-	updateProductCounts
+	updateProductCounts,
+	recordCacheHit,
+	recordCacheMiss,
 } = require('../metrics')
 // const messageBroker = require("../utils/messageBroker");
 const fetch =
 	// dynamic import to support CJS
 	(...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
 const config = require('../config')
+const cacheService = require('../services/cacheService')
 
 /**
  * Class to hold the API implementation for the product services
@@ -159,6 +162,11 @@ class ProductController {
 			recordProductOperation('create', 'success')
 			updateProductCounts(Product)
 
+			// Invalidate cache (new product added)
+			cacheService.invalidate().catch(err => {
+				logger.warn({ error: err.message }, 'Failed to invalidate cache after create')
+			})
+
 			res.status(201).json(product)
 		} catch (error) {
 			logger.error({ error: error.message }, 'Server error in createProduct')
@@ -175,8 +183,25 @@ class ProductController {
 				endTimer()
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
+
+			// Try cache first
+			const cachedProducts = await cacheService.getAllProducts()
+			if (cachedProducts) {
+				endTimer()
+				recordCacheHit('list_all')
+				recordProductOperation('read', 'success')
+				return res.status(200).json(cachedProducts)
+			}
+
+			// Cache miss - fetch from DB
+			recordCacheMiss('list_all')
 			const products = await Product.find({})
 			endTimer()
+
+			// Store in cache (async, don't block response)
+			cacheService.setAllProducts(products).catch(err => {
+				logger.warn({ error: err.message }, 'Failed to cache products')
+			})
 
 			recordProductOperation('read', 'success')
 			res.status(200).json(products)
@@ -197,6 +222,18 @@ class ProductController {
 				return res.status(401).json({ message: 'Unauthorized' })
 			}
 			const { id } = req.params
+
+			// Try cache first
+			const cachedProduct = await cacheService.getProduct(id)
+			if (cachedProduct) {
+				endTimer()
+				recordCacheHit('by_id')
+				recordProductOperation('read', 'success')
+				return res.status(200).json(cachedProduct)
+			}
+
+			// Cache miss - fetch from DB
+			recordCacheMiss('by_id')
 			const product = await Product.findById(id)
 			endTimer()
 
@@ -204,6 +241,11 @@ class ProductController {
 				recordProductOperation('read', 'not_found')
 				return res.status(404).json({ message: 'Product not found' })
 			}
+
+			// Store in cache (async, don't block response)
+			cacheService.setProduct(id, product).catch(err => {
+				logger.warn({ error: err.message, productId: id }, 'Failed to cache product')
+			})
 
 			recordProductOperation('read', 'success')
 			res.status(200).json(product)
@@ -231,6 +273,11 @@ class ProductController {
 				recordProductOperation('update', 'not_found')
 				return res.status(404).json({ message: 'Product not found' })
 			}
+
+			// Invalidate cache (product updated)
+			cacheService.invalidate(id).catch(err => {
+				logger.warn({ error: err.message, productId: id }, 'Failed to invalidate cache after update')
+			})
 
 			recordProductOperation('update', 'success')
 			res.status(200).json(product)
@@ -287,6 +334,11 @@ class ProductController {
 
 			recordProductOperation('delete', 'success')
 			updateProductCounts(Product)
+
+			// Invalidate cache (product deleted)
+			cacheService.invalidate(id).catch(err => {
+				logger.warn({ error: err.message, productId: id }, 'Failed to invalidate cache after delete')
+			})
 
 			res.status(204).send()
 		} catch (error) {

@@ -49,6 +49,13 @@ const inventorySyncDuration = new promClient.Histogram({
   buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5]
 });
 
+// Cache hit/miss counter
+const cacheOperations = new promClient.Counter({
+  name: 'product_cache_operations_total',
+  help: 'Product cache hit/miss operations',
+  labelNames: ['operation', 'result'] // operation: list_all, by_id; result: hit, miss
+});
+
 /**
  * Record a product operation
  * @param {'create'|'read'|'update'|'delete'} operation 
@@ -103,6 +110,22 @@ function startInventorySyncTimer(operation) {
 }
 
 /**
+ * Record cache hit
+ * @param {'list_all'|'by_id'} operation 
+ */
+function recordCacheHit(operation) {
+  cacheOperations.inc({ operation, result: 'hit' });
+}
+
+/**
+ * Record cache miss
+ * @param {'list_all'|'by_id'} operation 
+ */
+function recordCacheMiss(operation) {
+  cacheOperations.inc({ operation, result: 'miss' });
+}
+
+/**
  * Update product counts from database
  * @param {import('mongoose').Model} ProductModel 
  */
@@ -136,6 +159,7 @@ module.exports = {
   productsByCategory,
   inventorySyncOperations,
   inventorySyncDuration,
+  cacheOperations,
 
   // Helper functions
   recordProductOperation,
@@ -144,5 +168,7 @@ module.exports = {
   setProductsByCategory,
   recordInventorySync,
   startInventorySyncTimer,
-  updateProductCounts
+  updateProductCounts,
+  recordCacheHit,
+  recordCacheMiss,
 };
