@@ -1,0 +1,13 @@
+# Grafana Dashboard Provisioning
+# Auto-load dashboards from /var/lib/grafana/dashboards
+apiVersion: 1
+
+providers:
+  - name: 'E-commerce Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
