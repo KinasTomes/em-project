@@ -30,12 +30,18 @@
 import http from 'k6/http'
 import { check, sleep, group } from 'k6'
 import { Trend, Counter, Rate } from 'k6/metrics'
-import { randomString } from 'https://jslib.k6.io/k6-utils/1.2.0/index.js'
+// Helper function to generate random string locally
+function randomString(length) {
+	const charset = 'abcdefghijklmnopqrstuvwxyz0123456789';
+	let res = '';
+	while (length--) res += charset[Math.random() * charset.length | 0];
+	return res;
+}
 
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-const API_BASE = __ENV.API_BASE || 'http://localhost:3003'
+const API_BASE = __ENV.API_BASE || 'http://136.110.42.41:3003' // <--- THAY THẾ 'YOUR_VM_IP' BẰNG IP EXTERNAL CỦA VM (Ví dụ: 35.198.x.x)
 const SCENARIO = __ENV.SCENARIO || 'normal'
 
 // ============================================================================
@@ -46,21 +52,25 @@ const loginTime = new Trend('login_time', true)
 const ordersCreated = new Counter('orders_created_total')
 const ordersFailed = new Counter('orders_failed_total')
 const orderSuccessRate = new Rate('order_success_rate')
+// Metrics theo report.md
+const ordersOver5s = new Counter('orders_over_5s_total') // Đơn pending > 5s
+const orderUnder5sRate = new Rate('order_under_5s_rate') // % đơn < 5s
 
 // ============================================================================
 // TEST OPTIONS
 // ============================================================================
 const scenarios = {
-	// Test bình thường: 10 VUs, 30s
+	// Test bình thường: 10 VUs, 30s (quick test)
 	normal: {
+		executor: 'ramping-vus',
 		stages: [
-			{ duration: '5s', target: 10 }, // Ramp up
-			{ duration: '30s', target: 10 }, // Steady
-			{ duration: '5s', target: 0 }, // Ramp down
+			{ duration: '5s', target: 10 },
+			{ duration: '30s', target: 10 },
+			{ duration: '5s', target: 0 },
 		],
 	},
-	// Stress test: Tăng dần đến 100 VUs
 	stress: {
+		executor: 'ramping-vus',
 		stages: [
 			{ duration: '10s', target: 20 },
 			{ duration: '30s', target: 50 },
@@ -69,20 +79,48 @@ const scenarios = {
 			{ duration: '10s', target: 0 },
 		],
 	},
-	// Spike test: Đột ngột 200 users
 	spike: {
+		executor: 'ramping-vus',
 		stages: [
 			{ duration: '5s', target: 10 },
-			{ duration: '5s', target: 200 }, // Spike!
-			{ duration: '30s', target: 200 }, // Hold
+			{ duration: '5s', target: 200 },
+			{ duration: '30s', target: 200 },
 			{ duration: '5s', target: 10 },
 			{ duration: '5s', target: 0 },
 		],
 	},
+	report: {
+		executor: 'ramping-vus',
+		stages: [
+			{ duration: '10s', target: 50 },
+			{ duration: '20s', target: 100 },
+			{ duration: '20s', target: 200 },
+			{ duration: '20s', target: 200 },
+			{ duration: '20s', target: 0 },
+		],
+	},
+	light: {
+		executor: 'ramping-vus',
+		stages: [
+			{ duration: '5s', target: 5 },
+			{ duration: '60s', target: 5 },
+			{ duration: '5s', target: 0 },
+		],
+	},
+	highrps: {
+		executor: 'constant-arrival-rate',
+		rate: 100,
+		timeUnit: '1s',
+		duration: '30s',
+		preAllocatedVUs: 10,
+		maxVUs: 30,
+	},
 }
 
 export const options = {
-	stages: scenarios[SCENARIO].stages,
+	scenarios: {
+		[SCENARIO]: scenarios[SCENARIO],
+	},
 	thresholds: {
 		// Case 1 Targets (từ report.md)
 		order_creation_time: [
@@ -145,7 +183,11 @@ export function setup() {
 		console.error(
 			`❌ Register failed: ${registerRes.status} - ${registerRes.body}`
 		)
+		throw new Error(`Setup failed: Register returned ${registerRes.status}`)
 	}
+
+	// Wait slightly for DB consistency
+	sleep(0.5)
 
 	// 2. Login to get token
 	const loginRes = http.post(
@@ -160,7 +202,7 @@ export function setup() {
 	const loginData = parseJson(loginRes)
 	if (!loginData || !loginData.token) {
 		console.error(`❌ Login failed: ${loginRes.status} - ${loginRes.body}`)
-		return { token: null }
+		throw new Error(`Setup failed: Login returned ${loginRes.status} - ${loginRes.body}`)
 	}
 
 	const token = loginData.token
@@ -244,19 +286,10 @@ export default function (data) {
 	// CORE TEST: Tạo Order và đo thời gian
 	// =========================================================================
 	group('Create Order', () => {
+		// Order service expects: { ids: [...], quantities: [...] }
 		const orderPayload = JSON.stringify({
-			items: [
-				{
-					productId: productId,
-					quantity: 1,
-				},
-			],
-			// Thêm các field khác nếu cần
-			shippingAddress: {
-				street: '123 Test Street',
-				city: 'Test City',
-				country: 'VN',
-			},
+			ids: [productId],
+			quantities: [1],
 		})
 
 		const startTime = Date.now()
@@ -271,18 +304,31 @@ export default function (data) {
 		// Record metrics
 		orderCreationTime.add(duration)
 
-		// Validate response
-		const success = check(response, {
+		// Record % đơn pending > 5s (report.md metric)
+		if (duration > 5000) {
+			ordersOver5s.add(1)
+			orderUnder5sRate.add(false)
+		} else {
+			orderUnder5sRate.add(true)
+		}
+
+		// 1. Validate Functional Success (Tạo đơn thành công)
+		const isCreated = check(response, {
 			'Order created (2xx)': (r) => r.status >= 200 && r.status < 300,
 			'Response has order ID': (r) => {
 				const body = parseJson(r)
 				return body && (body._id || body.id || body.orderId)
 			},
-			'Response time < 500ms': (r) => duration < 500,
-			'Response time < 400ms (target)': (r) => duration < 400,
 		})
 
-		if (success) {
+		// 2. Validate Performance (Đạt chuẩn thời gian) - Không ảnh hưởng logic đếm số đơn thành công
+		check(response, {
+			'Response time < 500ms': (r) => duration < 500,
+			'Response time < 400ms (target)': (r) => duration < 400,
+			'Response time < 5s (report target)': (r) => duration < 5000,
+		})
+
+		if (isCreated) {
 			ordersCreated.add(1)
 			orderSuccessRate.add(true)
 		} else {
@@ -312,30 +358,67 @@ export function teardown(data) {
 // CUSTOM SUMMARY (Optional)
 // ============================================================================
 export function handleSummary(data) {
-	const med = data.metrics.order_creation_time?.values?.med || 'N/A'
-	const p95 = data.metrics.order_creation_time?.values['p(95)'] || 'N/A'
-	const p99 = data.metrics.order_creation_time?.values['p(99)'] || 'N/A'
+	const avg = data.metrics.order_creation_time?.values?.avg || 0
+	const med = data.metrics.order_creation_time?.values?.med || 0
+	const p95 = data.metrics.order_creation_time?.values['p(95)'] || 0
+	const p99 = data.metrics.order_creation_time?.values['p(99)'] || 0
 	const successRate = data.metrics.order_success_rate?.values?.rate || 0
+	const under5sRate = data.metrics.order_under_5s_rate?.values?.rate || 1
+	const over5sPercent = ((1 - under5sRate) * 100).toFixed(1)
+	const totalOrders = data.metrics.orders_created_total?.values?.count || 0
+	const failedOrders = data.metrics.orders_failed_total?.values?.count || 0
+	const rps = data.metrics.http_reqs?.values?.rate || 0
 
 	console.log(`
-╔════════════════════════════════════════════════════════════════╗
-║           CASE 1: ORDER CREATION TIME RESULTS                  ║
-╠════════════════════════════════════════════════════════════════╣
-║  Metric              │ Value        │ Target      │ Status     ║
-╠══════════════════════╪══════════════╪═════════════╪════════════╣
-║  Median (P50)        │ ${String(med).padEnd(12)} │ < 300ms     │ ${
-		med < 300 ? '✅ PASS' : '❌ FAIL'
-	}     ║
-║  P95 Latency         │ ${String(p95).padEnd(12)} │ < 400ms     │ ${
-		p95 < 400 ? '✅ PASS' : '❌ FAIL'
-	}     ║
-║  P99 Latency         │ ${String(p99).padEnd(12)} │ < 800ms     │ ${
-		p99 < 800 ? '✅ PASS' : '❌ FAIL'
-	}     ║
-║  Success Rate        │ ${(successRate * 100).toFixed(
-		1
-	)}%        │ > 95%       │ ${successRate > 0.95 ? '✅ PASS' : '❌ FAIL'}     ║
-╚════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    CASE 1: ORDER CREATION TIME RESULTS                       ║
+║                    (Event-Driven Architecture Test)                          ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Metric                    │ Value          │ Target (report.md) │ Status    ║
+╠════════════════════════════╪════════════════╪════════════════════╪═══════════╣
+║  Avg Response Time         │ ${String(avg.toFixed(0) + 'ms').padEnd(
+		14
+	)} │ < 400ms            │ ${avg < 400 ? '✅ PASS' : '❌ FAIL'}     ║
+║  Median (P50)              │ ${String(med.toFixed(0) + 'ms').padEnd(
+		14
+	)} │ < 300ms            │ ${med < 300 ? '✅ PASS' : '❌ FAIL'}     ║
+║  P95 Latency               │ ${String(p95.toFixed(0) + 'ms').padEnd(
+		14
+	)} │ < 400ms            │ ${p95 < 400 ? '✅ PASS' : '❌ FAIL'}     ║
+║  P99 Latency               │ ${String(p99.toFixed(0) + 'ms').padEnd(
+		14
+	)} │ < 800ms            │ ${p99 < 800 ? '✅ PASS' : '❌ FAIL'}     ║
+╠════════════════════════════╪════════════════╪════════════════════╪═══════════╣
+║  % Orders > 5s (pending)   │ ${String(over5sPercent + '%').padEnd(
+		14
+	)} │ < 1.5%             │ ${parseFloat(over5sPercent) < 1.5 ? '✅ PASS' : '❌ FAIL'
+		}     ║
+║  Success Rate              │ ${String(
+			(successRate * 100).toFixed(1) + '%'
+		).padEnd(14)} │ > 95%              │ ${successRate > 0.95 ? '✅ PASS' : '❌ FAIL'
+		}     ║
+╠════════════════════════════╪════════════════╪════════════════════╪═══════════╣
+║  Total Orders Created      │ ${String(totalOrders).padEnd(
+			14
+		)} │                    │           ║
+║  Failed Orders             │ ${String(failedOrders).padEnd(
+			14
+		)} │                    │           ║
+║  Throughput (RPS)          │ ${String(rps.toFixed(1)).padEnd(
+			14
+		)} │                    │           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+📊 REPORT.MD DATA (Copy vào bảng):
+┌─────────────────────────────────┬─────────────┬─────────────┐
+│ Chỉ số                          │ Trước       │ Sau (ED)    │
+├─────────────────────────────────┼─────────────┼─────────────┤
+│ Thời gian tạo đơn (avg)         │ 3–5s        │ ${avg.toFixed(0)}ms       │
+│ % đơn bị pending quá 5s         │ 12%         │ ${over5sPercent}%        │
+│ Success Rate                    │ ~88%        │ ${(successRate * 100).toFixed(
+			1
+		)}%       │
+└─────────────────────────────────┴─────────────┴─────────────┘
   `)
 
 	return {
