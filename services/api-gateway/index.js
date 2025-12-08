@@ -35,6 +35,11 @@ const {
   createValidator,
   conditionalAuth,
   getClientIp,
+  circuitBreakerMiddleware,
+  recordSuccess,
+  recordFailure,
+  getAllCircuitStats,
+  getCircuitBreaker,
 } = require("./middlewares");
 
 const proxy = httpProxy.createProxyServer({ agent: keepAliveAgent });
@@ -94,7 +99,7 @@ proxy.on('proxyReq', (proxyReq, req, res) => {
   }
 });
 
-// Proxy response handler - record metrics
+// Proxy response handler - record metrics and circuit breaker state
 proxy.on('proxyRes', (proxyRes, req, res) => {
   const requestId = req.headers['x-request-id'];
   const timerData = proxyTimers.get(requestId);
@@ -113,6 +118,11 @@ proxy.on('proxyRes', (proxyRes, req, res) => {
     // Mark service as healthy on successful response
     if (proxyRes.statusCode < 500) {
       gatewayMetrics.setUpstreamHealth(timerData.target, true);
+      // Record success for circuit breaker
+      recordSuccess(timerData.target);
+    } else {
+      // Record failure for circuit breaker (5xx errors)
+      recordFailure(timerData.target, new Error(`HTTP ${proxyRes.statusCode}`));
     }
     
     proxyTimers.delete(requestId);
@@ -128,6 +138,9 @@ proxy.on('error', (err, req, res) => {
   // Record proxy error metric
   gatewayMetrics.recordProxyError(targetService, err.code);
   
+  // Record failure for circuit breaker
+  recordFailure(targetService, err);
+  
   // Clean up timer
   if (requestId) {
     proxyTimers.delete(requestId);
@@ -139,6 +152,7 @@ proxy.on('error', (err, req, res) => {
       code: err.code,
       target: req?.url,
       method: req?.method,
+      service: targetService,
     },
     '❌ Proxy error - downstream service unavailable'
   );
@@ -152,6 +166,7 @@ proxy.on('error', (err, req, res) => {
       error: 'Service Unavailable',
       message: `Downstream service is not available: ${err.message}`,
       code: err.code,
+      service: targetService,
     })
   );
 });
@@ -219,6 +234,32 @@ app.get('/health', (req, res) => {
 app.get('/metrics', metricsHandler);
 
 // ============================================
+// CIRCUIT BREAKER STATUS ENDPOINT
+// ============================================
+app.get('/circuit-breaker/status', (req, res) => {
+  const stats = getAllCircuitStats();
+  res.json({
+    timestamp: new Date().toISOString(),
+    circuits: stats,
+  });
+});
+
+// ============================================
+// INITIALIZE CIRCUIT BREAKERS FOR ALL SERVICES
+// ============================================
+const circuitBreakerOptions = {
+  timeout: 10000,                    // 10s timeout
+  errorThresholdPercentage: 50,      // Open if 50% fail
+  resetTimeout: 30000,               // Try again after 30s
+  volumeThreshold: 5,                // Min 5 requests before CB can trip
+};
+
+// Initialize circuit breakers for each service
+['auth', 'product', 'order', 'inventory', 'payment', 'seckill'].forEach(service => {
+  getCircuitBreaker(service, circuitBreakerOptions);
+});
+
+// ============================================
 // AUTH SERVICE ROUTES
 // ============================================
 
@@ -227,7 +268,7 @@ app.use('/auth/login', authLimiter);
 app.use('/auth/register', authLimiter);
 
 // Route requests to the auth service
-app.use("/auth", (req, res) => {
+app.use("/auth", circuitBreakerMiddleware('auth'), (req, res) => {
   logger.info(
     { path: req.path, method: req.method },
     "Routing to auth service"
@@ -243,7 +284,7 @@ app.use("/auth", (req, res) => {
 // ============================================
 // PRODUCT SERVICE ROUTES (Public read, Auth for write)
 // ============================================
-app.use("/products", (req, res, next) => {
+app.use("/products", circuitBreakerMiddleware('product'), (req, res, next) => {
   // GET requests are public
   if (req.method === 'GET') {
     return next();
@@ -275,7 +316,7 @@ app.use("/products", (req, res, next) => {
 // ============================================
 // ORDER SERVICE ROUTES (Requires authentication)
 // ============================================
-app.use("/orders", conditionalAuth, (req, res) => {
+app.use("/orders", circuitBreakerMiddleware('order'), conditionalAuth, (req, res) => {
   logger.info(
     { path: req.path, method: req.method },
     "Routing to order service"
@@ -300,7 +341,7 @@ app.use("/orders", conditionalAuth, (req, res) => {
 // ============================================
 // INVENTORY SERVICE ROUTES (Fixed: Using config instead of hardcoded URL)
 // ============================================
-app.use("/inventory", (req, res) => {
+app.use("/inventory", circuitBreakerMiddleware('inventory'), (req, res) => {
   logger.info(
     { path: req.path, method: req.method },
     "Routing to inventory service"
@@ -326,7 +367,7 @@ app.use("/inventory", (req, res) => {
 // ============================================
 // PAYMENT SERVICE ROUTES (Requires authentication)
 // ============================================
-app.use("/payments", conditionalAuth, (req, res) => {
+app.use("/payments", circuitBreakerMiddleware('payment'), conditionalAuth, (req, res) => {
   logger.info(
     { path: req.path, method: req.method },
     "Routing to payment service"
@@ -354,7 +395,7 @@ app.use("/payments", conditionalAuth, (req, res) => {
 // POST /seckill/buy requires authentication (X-User-ID header set after JWT verification)
 // GET /seckill/status/:productId is public
 // Admin routes (/admin/seckill/*) require X-Admin-Key header (handled by seckill service)
-app.use("/seckill", (req, res, next) => {
+app.use("/seckill", circuitBreakerMiddleware('seckill'), (req, res, next) => {
   // GET /status is public
   if (req.method === 'GET' && req.path.startsWith('/status')) {
     return next();
@@ -448,6 +489,7 @@ app.listen(config.port, '0.0.0.0', () => {
         authentication: 'centralized',
         requestValidation: 'enabled',
         metrics: 'enabled',
+        circuitBreaker: 'enabled (50% threshold, 30s reset)',
       },
     },
     "🚀 API Gateway started successfully"

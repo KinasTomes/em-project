@@ -116,6 +116,9 @@ importers:
 
   services/api-gateway:
     dependencies:
+      '@ecommerce/circuit-breaker':
+        specifier: workspace:*
+        version: link:../../packages/circuit-breaker
       '@ecommerce/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -134,6 +137,9 @@ importers:
       http-proxy:
         specifier: ^1.18.1
         version: 1.18.1
+      opossum:
+        specifier: ^8.1.4
+        version: 8.5.0
 
   services/auth:
     dependencies:

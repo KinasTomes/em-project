@@ -15,7 +15,9 @@
     "@ecommerce/logger": "workspace:*",
     "@ecommerce/metrics": "workspace:*",
     "@ecommerce/tracing": "workspace:*",
+    "@ecommerce/circuit-breaker": "workspace:*",
     "express": "^4.18.2",
-    "http-proxy": "^1.18.1"
+    "http-proxy": "^1.18.1",
+    "opossum": "^8.1.4"
   }
 }

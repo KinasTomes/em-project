@@ -39,6 +39,16 @@ const {
   schemas,
 } = require('./requestValidator');
 
+const {
+  circuitBreakerMiddleware,
+  getCircuitBreaker,
+  getCircuitState,
+  getAllCircuitStats,
+  recordSuccess,
+  recordFailure,
+  isCircuitOpen,
+} = require('./circuitBreaker');
+
 module.exports = {
   // Rate Limiting
   createRateLimiter,
@@ -70,4 +80,13 @@ module.exports = {
   validateBody,
   generateRequestId,
   schemas,
+
+  // Circuit Breaker
+  circuitBreakerMiddleware,
+  getCircuitBreaker,
+  getCircuitState,
+  getAllCircuitStats,
+  recordSuccess,
+  recordFailure,
+  isCircuitOpen,
 };
