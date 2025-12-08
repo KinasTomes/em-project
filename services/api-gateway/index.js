@@ -22,8 +22,8 @@ const http = require("http");
 
 const keepAliveAgent = new http.Agent({
   keepAlive: true,        // <--- CHÌA KHÓA Ở ĐÂY: Đừng đóng kết nối
-  maxSockets: 100,        // Cho phép mở sẵn 100 đường dây nóng
-  keepAliveMsecs: 5   // Giữ đường dây 10s nếu không ai dùng
+  maxSockets: 3000,       // Cho phép mở sẵn 3000 đường dây nóng (handle 2500 concurrent users)
+  keepAliveMsecs: 1000    // Giữ đường dây 5s nếu không ai dùng
 });
 
 // Import middlewares
